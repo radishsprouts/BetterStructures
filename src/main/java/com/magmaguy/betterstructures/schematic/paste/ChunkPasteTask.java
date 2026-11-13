@@ -390,6 +390,13 @@ public final class ChunkPasteTask implements Runnable {
     }
 
     private void spawnEntity(StructureEntityEntry entry) {
+        // If this entity is a 3D prop placeholder (FreeMinecraftModels) and FMM is not installed,
+        // do not spawn the armor stand at all to prevent ghost collisions and suffocating nearby mobs.
+        if (EntityNbtApplier.isPropModel(entry.entity().nbt()) && !Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
+            Logger.info("[ChunkPasteTask] Skipped prop ArmorStand spawn (FreeMinecraftModels not active): " + entry.entity().entityId() + " at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + ")");
+            return;
+        }
+
         Location loc = new Location(world, entry.worldX(), entry.worldY(), entry.worldZ(), entry.entity().yaw(), entry.entity().pitch());
         String rawId = entry.entity().entityId();
         if (rawId == null || rawId.isBlank()) return;

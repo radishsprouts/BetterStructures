@@ -29,6 +29,18 @@ public final class EntityNbtApplier {
     }
 
     /**
+     * Checks whether the schematic entity NBT is a 3D prop placeholder (FreeMinecraftModels).
+     */
+    public static boolean isPropModel(@Nullable SimpleNbt.CompoundTag entityNbt) {
+        if (entityNbt == null) return false;
+        SimpleNbt.CompoundTag dataTag = entityNbt.getCompound("Data");
+        SimpleNbt.CompoundTag tag = dataTag != null ? dataTag : entityNbt;
+        SimpleNbt.CompoundTag bukkitValues = tag.getCompound("BukkitValues");
+        return bukkitValues != null &&
+                (bukkitValues.containsKey("freeminecraftmodels:entity") || bukkitValues.containsKey("freeminecraftmodels:prop"));
+    }
+
+    /**
      * Applies all stored NBT properties from a schematic entity tag to a Bukkit entity.
      *
      * @param entity    The spawned Bukkit entity.

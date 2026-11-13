@@ -632,6 +632,13 @@ public final class ModulePasting {
 
     private void processNativeEntity(NativeEntityPlacement ep) {
         StructureEntity se = ep.entity();
+
+        // If this entity is a 3D prop placeholder (FreeMinecraftModels) and FMM is not installed,
+        // do not spawn the armor stand at all to prevent ghost collisions and suffocating nearby mobs.
+        if (EntityNbtApplier.isPropModel(se.nbt()) && !Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
+            return;
+        }
+
         String rawId = se.entityId();
         if (rawId == null || rawId.isBlank()) return;
 
