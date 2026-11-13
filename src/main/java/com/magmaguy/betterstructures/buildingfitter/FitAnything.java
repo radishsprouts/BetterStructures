@@ -73,7 +73,16 @@ public class FitAnything {
 
     public FitAnything(SchematicContainer schematicContainer) {
         this.schematicContainer = schematicContainer;
-        this.verticalOffset = schematicContainer.getClipboard().getMinimumPoint().y() - schematicContainer.getClipboard().getOrigin().y();
+        if (schematicContainer.getStructureSchematic() != null) {
+            this.verticalOffset = schematicContainer.getStructureSchematic().getOffsetY();
+            this.schematicOffset = new Vector(
+                    schematicContainer.getStructureSchematic().getOffsetX(),
+                    schematicContainer.getStructureSchematic().getOffsetY(),
+                    schematicContainer.getStructureSchematic().getOffsetZ()
+            );
+        } else if (schematicContainer.getClipboard() != null) {
+            this.verticalOffset = schematicContainer.getClipboard().getMinimumPoint().y() - schematicContainer.getClipboard().getOrigin().y();
+        }
     }
 
     public FitAnything() {
@@ -101,11 +110,20 @@ public class FitAnything {
     }
 
     protected void randomizeSchematicContainer(Location location, GeneratorConfigFields.StructureType structureType) {
-        if (schematicClipboard != null) return;
+        if (schematicClipboard != null || (schematicContainer != null && schematicContainer.getStructureSchematic() != null)) return;
         schematicContainer = SchematicPicker.pick(location, structureType);
         if (schematicContainer != null) {
             schematicClipboard = schematicContainer.getClipboard();
-            verticalOffset = schematicContainer.getClipboard().getMinimumPoint().y() - schematicContainer.getClipboard().getOrigin().y();
+            if (schematicContainer.getStructureSchematic() != null) {
+                verticalOffset = schematicContainer.getStructureSchematic().getOffsetY();
+                schematicOffset = new Vector(
+                        schematicContainer.getStructureSchematic().getOffsetX(),
+                        schematicContainer.getStructureSchematic().getOffsetY(),
+                        schematicContainer.getStructureSchematic().getOffsetZ()
+                );
+            } else if (schematicContainer.getClipboard() != null) {
+                verticalOffset = schematicContainer.getClipboard().getMinimumPoint().y() - schematicContainer.getClipboard().getOrigin().y();
+            }
         }
     }
 
@@ -130,6 +148,28 @@ public class FitAnything {
         BuildPlaceEvent buildPlaceEvent = new BuildPlaceEvent(this);
         Bukkit.getServer().getPluginManager().callEvent(buildPlaceEvent);
         if (buildPlaceEvent.isCancelled()) return;
+
+        // Native Folia StructurePasteSession path
+        if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
+            setDefaultPedestalMaterial(location);
+            Vector offset = schematicOffset != null ? schematicOffset : new Vector(
+                    schematicContainer.getStructureSchematic().getOffsetX(),
+                    schematicContainer.getStructureSchematic().getOffsetY(),
+                    schematicContainer.getStructureSchematic().getOffsetZ()
+            );
+            com.magmaguy.betterstructures.schematic.paste.StructurePasteSession.start(
+                    location.getWorld(),
+                    location.clone(),
+                    offset,
+                    schematicContainer.getStructureSchematic(),
+                    this,
+                    this::getPedestalMaterial,
+                    schematicContainer.getChestContents(),
+                    schematicContainer.getBarrelContents(),
+                    null
+            );
+            return;
+        }
 
         Schematic.enqueue(new Preparation(location.clone()));
     }

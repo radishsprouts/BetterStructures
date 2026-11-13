@@ -249,7 +249,9 @@ final class TerrainScanQueue {
             for (long chunk : awaited) {
                 int x = TerrainReads.chunkX(chunk), z = TerrainReads.chunkZ(chunk);
                 if (world.isChunkLoaded(x, z)) {
-                    hold(chunk, world.getChunkAt(x, z));
+                    if (!PlatformScheduler.isFolia()) {
+                        hold(chunk, world.getChunkAt(x, z));
+                    }
                 } else {
                     ready = false;
                     request(chunk);

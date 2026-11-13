@@ -104,12 +104,26 @@ public class FitUndergroundBuilding extends FitAnything {
         }
 
         randomizeSchematicContainer(originalLocation, structureType);
-        if (schematicClipboard == null) {
+        if (schematicClipboard == null && (schematicContainer == null || schematicContainer.getStructureSchematic() == null)) {
             //Bukkit.getLogger().info("Did not spawn structure in biome " + originalLocation.getBlock().getBiome() + " because no valid schematics exist for it.");
             return;
         }
 
-        schematicOffset = WorldEditUtils.getSchematicOffset(schematicClipboard);
+        if (schematicOffset == null) {
+            if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
+                schematicOffset = new Vector(
+                        schematicContainer.getStructureSchematic().getOffsetX(),
+                        schematicContainer.getStructureSchematic().getOffsetY(),
+                        schematicContainer.getStructureSchematic().getOffsetZ()
+                );
+            } else if (schematicClipboard != null) {
+                schematicOffset = WorldEditUtils.getSchematicOffset(schematicClipboard);
+            }
+        }
+
+        int schematicHeight = (schematicContainer != null && schematicContainer.getStructureSchematic() != null)
+                ? schematicContainer.getStructureSchematic().getHeight()
+                : (schematicClipboard != null ? schematicClipboard.getRegion().getHeight() : 10);
 
         //Make sure the schematic will not go beyond the bedrock level
         switch (originalLocation.getWorld().getEnvironment()) {
@@ -117,20 +131,20 @@ public class FitUndergroundBuilding extends FitAnything {
             case CUSTOM:
                 if (originalLocation.getY() - Math.abs(schematicOffset.getY()) < DefaultConfig.getLowestYNormalCustom())
                     originalLocation.setY(DefaultConfig.getLowestYNormalCustom() + 1 + Math.abs(schematicOffset.getY()));
-                else if (originalLocation.getY() + Math.abs(schematicOffset.getY()) - schematicClipboard.getRegion().getHeight() > DefaultConfig.getHighestYNormalCustom())
-                    originalLocation.setY(DefaultConfig.getHighestYNormalCustom() - schematicClipboard.getRegion().getHeight() + Math.abs(schematicOffset.getY()));
+                else if (originalLocation.getY() + Math.abs(schematicOffset.getY()) - schematicHeight > DefaultConfig.getHighestYNormalCustom())
+                    originalLocation.setY(DefaultConfig.getHighestYNormalCustom() - schematicHeight + Math.abs(schematicOffset.getY()));
                 break;
             case NETHER:
                 if (originalLocation.getY() - Math.abs(schematicOffset.getY()) < DefaultConfig.getLowestYNether())
                     originalLocation.setY(DefaultConfig.getLowestYNether() + 1 + Math.abs(schematicOffset.getY()));
-                else if (originalLocation.getY() + Math.abs(schematicOffset.getY()) - schematicClipboard.getRegion().getHeight() > DefaultConfig.getHighestYNether())
-                    originalLocation.setY(DefaultConfig.getHighestYNether() - schematicClipboard.getRegion().getHeight() + Math.abs(schematicOffset.getY()));
+                else if (originalLocation.getY() + Math.abs(schematicOffset.getY()) - schematicHeight > DefaultConfig.getHighestYNether())
+                    originalLocation.setY(DefaultConfig.getHighestYNether() - schematicHeight + Math.abs(schematicOffset.getY()));
                 break;
             case THE_END:
                 if (originalLocation.getY() - Math.abs(schematicOffset.getY()) < DefaultConfig.getLowestYEnd())
                     originalLocation.setY(DefaultConfig.getLowestYEnd() + 1 + Math.abs(schematicOffset.getY()));
-                else if (originalLocation.getY() + Math.abs(schematicOffset.getY()) - schematicClipboard.getRegion().getHeight() > DefaultConfig.getHighestYEnd())
-                    originalLocation.setY(DefaultConfig.getHighestYEnd() - schematicClipboard.getRegion().getHeight() + Math.abs(schematicOffset.getY()));
+                else if (originalLocation.getY() + Math.abs(schematicOffset.getY()) - schematicHeight > DefaultConfig.getHighestYEnd())
+                    originalLocation.setY(DefaultConfig.getHighestYEnd() - schematicHeight + Math.abs(schematicOffset.getY()));
                 break;
         }
 
@@ -214,7 +228,12 @@ public class FitUndergroundBuilding extends FitAnything {
 
     private void chunkScan(Location originalLocation, int chunkX, int chunkZ) {
         Location iteratedLocation = originalLocation.clone().add(new Vector(chunkX * 16, 0, chunkZ * 16));
-        double score = TerrainAdequacy.scan(scanStep, schematicClipboard, iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.UNDERGROUND);
+        double score;
+        if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
+            score = TerrainAdequacy.scan(scanStep, schematicContainer.getStructureSchematic(), iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.UNDERGROUND);
+        } else {
+            score = TerrainAdequacy.scan(scanStep, schematicClipboard, iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.UNDERGROUND);
+        }
         if (!originalLocation.getWorld().getEnvironment().equals(World.Environment.NETHER)) {
             if (score < 70)
                 return;

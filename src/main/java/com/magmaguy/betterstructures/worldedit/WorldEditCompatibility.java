@@ -86,6 +86,10 @@ public final class WorldEditCompatibility {
      * runs without block state conversion and NBT support, which breaks schematic loading and pasting.
      */
     public static void checkAdapterOnStartup() {
+        if (Bukkit.getPluginManager().getPlugin("WorldEdit") == null) {
+            Bukkit.getLogger().info("[BetterStructures] WorldEdit not detected. Running Folia native structure generation engine.");
+            return;
+        }
         int dataVersion;
         try {
             Platform platform = WorldEdit.getInstance().getPlatformManager().queryCapability(Capability.WORLD_EDITING);

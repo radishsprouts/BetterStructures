@@ -33,6 +33,8 @@ public class SchematicConfig extends CustomConfig {
             new SchematicLoadCoordinator();
     @Getter
     private static final HashMap<String, SchematicConfigField> schematicConfigurations = new HashMap<>();
+    // In-memory cache of parsed StructureSchematics for zero-disk-IO reuse across reloads
+    private static final Map<File, com.magmaguy.betterstructures.schematic.model.StructureSchematic> structureSchematicCache = new ConcurrentHashMap<>();
     //Survives content reloads on purpose: reloading exists to re-read configuration, and the
     //schematic files themselves are usually untouched between one reload and the next.
     private static final SchematicClipboardCache clipboardCache = new SchematicClipboardCache();
@@ -69,21 +71,19 @@ public class SchematicConfig extends CustomConfig {
         // Resolve filename collisions before reading clipboards or generating their configurations.
         schematicFilesList = ContentFileSelector.select(schematicFilesList);
 
-        Map<File, Clipboard> clipboards = loadClipboards(schematicFilesList);
-        phaseStart = logPhase("read " + clipboards.size() + " schematic files", phaseStart);
+        Map<File, com.magmaguy.betterstructures.schematic.model.StructureSchematic> structureSchematics = loadStructureSchematics(schematicFilesList);
+        phaseStart = logPhase("read " + structureSchematics.size() + " schematic files", phaseStart);
 
-        //Filename -> source file, so the container loop below can look its clipboard up directly.
-        //It used to scan the whole clipboard map per configuration, which on a full content install
-        //is ~682 configurations x ~682 clipboards of string comparisons for no reason.
+        //Filename -> source file, so the container loop below can look its schematic up directly.
         Map<String, File> sourceByFilename = new HashMap<>();
-        for (Map.Entry<File, Clipboard> entry : clipboards.entrySet()) {
+        for (Map.Entry<File, com.magmaguy.betterstructures.schematic.model.StructureSchematic> entry : structureSchematics.entrySet()) {
             sourceByFilename.put(
                     entry.getKey().getName(),
                     entry.getKey());
         }
 
         schematicConfigurations.clear();
-        for (File file : clipboards.keySet()) {
+        for (File file : structureSchematics.keySet()) {
             String configurationName = SchematicFileUtils.convertFromSchematicFilename(file.getName());
             SchematicConfigField schematicConfigField = new SchematicConfigField(configurationName, true);
             new CustomConfig(relativizeToDataFolder(file.getParentFile()),
@@ -96,14 +96,45 @@ public class SchematicConfig extends CustomConfig {
             if (!schematicConfigField.isEnabled()) continue;
             String schematicFilename = SchematicFileUtils.convertFromConfigurationFilename(schematicConfigField.getFilename());
             File source = sourceByFilename.get(schematicFilename);
-            Clipboard clipboard = source == null ? null : clipboards.get(source);
+            com.magmaguy.betterstructures.schematic.model.StructureSchematic schematic = source == null ? null : structureSchematics.get(source);
             new SchematicContainer(
-                    clipboard,
+                    schematic,
                     schematicFilename,
                     schematicConfigField,
                     schematicConfigField.getFilename());
         }
         logPhase("scan schematic contents", phaseStart);
+    }
+
+    private static Map<File, com.magmaguy.betterstructures.schematic.model.StructureSchematic> loadStructureSchematics(List<File> schematicFiles) {
+        Map<File, com.magmaguy.betterstructures.schematic.model.StructureSchematic> result = new LinkedHashMap<>();
+        if (schematicFiles == null || schematicFiles.isEmpty()) return result;
+
+        // Parallel parsing using common ForkJoinPool (pure Java, zero locks, zero DFU overhead)
+        schematicFiles.parallelStream().forEach(file -> {
+            com.magmaguy.betterstructures.schematic.model.StructureSchematic cached = structureSchematicCache.get(file);
+            if (cached != null) {
+                return;
+            }
+            try {
+                com.magmaguy.betterstructures.schematic.model.StructureSchematic parsed =
+                        com.magmaguy.betterstructures.schematic.reader.SchematicReader.read(file);
+                if (parsed != null) {
+                    structureSchematicCache.put(file, parsed);
+                }
+            } catch (Exception e) {
+                Logger.warn("Failed to read schematic file " + file.getPath() + ": " + e.getMessage());
+            }
+        });
+
+        // Insert in stable, sorted file order
+        for (File file : schematicFiles) {
+            com.magmaguy.betterstructures.schematic.model.StructureSchematic parsed = structureSchematicCache.get(file);
+            if (parsed != null) {
+                result.put(file, parsed);
+            }
+        }
+        return result;
     }
 
     /**

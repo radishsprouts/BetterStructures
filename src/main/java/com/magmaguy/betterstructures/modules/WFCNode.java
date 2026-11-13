@@ -316,7 +316,11 @@ public class WFCNode {
                 return;
             }
 
-            ModulePasting.paste(modulesContainer.getClipboard(), startLocation, modulesContainer.getRotation());
+            if (modulesContainer.getStructureSchematic() != null) {
+                ModulePasting.paste(modulesContainer.getStructureSchematic(), startLocation, modulesContainer.getRotation());
+            } else if (modulesContainer.getClipboard() != null) {
+                ModulePasting.paste(modulesContainer.getClipboard(), startLocation, modulesContainer.getRotation());
+            }
         });
     }
 }

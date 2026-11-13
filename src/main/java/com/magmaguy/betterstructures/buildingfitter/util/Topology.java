@@ -12,6 +12,24 @@ import java.util.ArrayList;
 import java.util.Collections;
 
 public class Topology {
+    public static double scan(double startingScore, int scanStep, com.magmaguy.betterstructures.schematic.model.StructureSchematic schematic, Location iteratedLocation, Vector schematicOffset) {
+        double score = startingScore;
+        int width = schematic.getWidth();
+        int depth = schematic.getLength();
+
+        ArrayList<Integer> heights = new ArrayList<>();
+        score = scanHighestLocations(width, depth, scanStep, iteratedLocation, schematicOffset, heights, score);
+        if (score == 0) return 0;
+
+        score = scanExtremeHeightDifferences(heights, score);
+        if (score == 0) return 0;
+
+        int averageFloorLevel = setToAverageHeight(heights, iteratedLocation);
+        score = scoreTerrainHeightVariation(heights, averageFloorLevel, score);
+
+        return score;
+    }
+
     public static double scan(double startingScore, int scanStep, Clipboard schematicClipboard, Location iteratedLocation, Vector schematicOffset) {
         //if (schematicOffset == null) Bukkit.getLogger().info("oops the schematic offset is null");
         double score = startingScore;

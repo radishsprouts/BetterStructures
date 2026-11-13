@@ -51,11 +51,21 @@ public class FitLiquidBuilding extends FitAnything {
         }
 
         randomizeSchematicContainer(originalLocation, GeneratorConfigFields.StructureType.LIQUID_SURFACE);
-        if (schematicClipboard == null) {
+        if (schematicClipboard == null && (schematicContainer == null || schematicContainer.getStructureSchematic() == null)) {
             //Bukkit.getLogger().info("Did not spawn structure in biome " + originalLocation.getBlock().getBiome() + " because no valid schematics exist for it.");
             return;
         }
-        schematicOffset = WorldEditUtils.getSchematicOffset(schematicClipboard);
+        if (schematicOffset == null) {
+            if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
+                schematicOffset = new Vector(
+                        schematicContainer.getStructureSchematic().getOffsetX(),
+                        schematicContainer.getStructureSchematic().getOffsetY(),
+                        schematicContainer.getStructureSchematic().getOffsetZ()
+                );
+            } else if (schematicClipboard != null) {
+                schematicOffset = WorldEditUtils.getSchematicOffset(schematicClipboard);
+            }
+        }
         anchor = originalLocation;
         evaluate();
     }
@@ -82,7 +92,17 @@ public class FitLiquidBuilding extends FitAnything {
 
     private void chunkScan(Location originalLocation, int chunkX, int chunkZ) {
         Location iteratedLocation = originalLocation.clone().add(new Vector(chunkX * 16, 1, chunkZ * 16));
-        double newScore = TerrainAdequacy.scan(scanStep, schematicClipboard, iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.LIQUID);
+        double newScore;
+        if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
+            newScore = TerrainAdequacy.scan(scanStep, schematicContainer.getStructureSchematic(), iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.LIQUID);
+        } else {
+            newScore = TerrainAdequacy.scan(scanStep, schematicClipboard, iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.LIQUID);
+        }
+        //Only a perfect score places liquid buildings, which subsumes the old < 90 early return
+        if (newScore == startingScore) {
+            highestScore = newScore;
+            location = iteratedLocation;
+        }
         //Only a perfect score places liquid buildings, which subsumes the old < 90 early return
         if (newScore == startingScore) {
             highestScore = newScore;

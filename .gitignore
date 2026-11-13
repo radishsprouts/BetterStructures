@@ -45,3 +45,4 @@ dependency-reduced-pom.xml
 *.jfr
 __pycache__/
 *.pyc
+WorldEdit/

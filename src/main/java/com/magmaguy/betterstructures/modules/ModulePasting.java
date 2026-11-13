@@ -11,6 +11,13 @@ import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfigFields;
 import com.magmaguy.betterstructures.config.treasures.TreasureConfig;
 import com.magmaguy.betterstructures.config.treasures.TreasureConfigFields;
 import com.magmaguy.betterstructures.thirdparty.EliteMobs;
+import com.magmaguy.betterstructures.schematic.model.StructureBlock;
+import com.magmaguy.betterstructures.schematic.model.StructureEntity;
+import com.magmaguy.betterstructures.schematic.model.StructureSchematic;
+import com.magmaguy.betterstructures.schematic.paste.StructurePasteSession;
+import com.magmaguy.betterstructures.schematic.sign.SignTextParser;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
+import com.magmaguy.betterstructures.util.PluginChunkHolds;
 import com.magmaguy.betterstructures.util.WorldEditUtils;
 import com.magmaguy.easyminecraftgoals.NMSManager;
 import com.magmaguy.magmacore.util.Logger;
@@ -26,22 +33,30 @@ import com.sk89q.worldedit.util.SideEffectSet;
 import com.sk89q.worldedit.world.block.BaseBlock;
 import com.sk89q.worldedit.world.block.BlockState;
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.Container;
+import org.bukkit.block.Sign;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Directional;
 import org.bukkit.block.data.Rail;
 import org.bukkit.block.data.type.Chest;
-import org.bukkit.block.data.type.Sign;
+import org.bukkit.block.sign.Side;
+import org.bukkit.block.sign.SignSide;
+import org.bukkit.block.structure.StructureRotation;
+import org.bukkit.entity.ArmorStand;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Deque;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -50,9 +65,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ModulePasting {
     private static final EnumSet<Material> SIGN_MATERIALS = EnumSet.noneOf(Material.class);
+    private final Map<String, ChestContents> barrelContents = new HashMap<>();
 
     static {
         //Locale.ROOT: the default-locale lowercase turns "SIGN" into "sıgn" on Turkish locales
@@ -126,6 +144,15 @@ public final class ModulePasting {
                  SCULK_CATALYST, SCULK_SHRIEKER -> true;
             default -> false;
         };
+    }
+
+    public static void paste(StructureSchematic schematic, Location location, Integer rotation) {
+        if (schematic == null || location == null) return;
+        StructureSchematic rotated = schematic.rotate(rotation == null ? 0 : rotation);
+        StructurePasteSession.start(
+                location.getWorld(), location, new Vector(0, 0, 0),
+                rotated, null, null, null, null, null
+        );
     }
 
     public static void paste(Clipboard clipboard, Location location, Integer rotation) {
@@ -329,6 +356,20 @@ public final class ModulePasting {
     }
 
     private void batchPaste(Deque<WFCNode> nodes) {
+        boolean hasStructureSchematic = false;
+        for (WFCNode node : nodes) {
+            ModulesContainer module = node.getModulesContainer();
+            if (module != null && module.getStructureSchematic() != null) {
+                hasStructureSchematic = true;
+                break;
+            }
+        }
+
+        if (hasStructureSchematic) {
+            batchPasteNative(nodes);
+            return;
+        }
+
         List<ModuleInput> inputs = new ArrayList<>();
         while (!nodes.isEmpty()) {
             WFCNode node = nodes.poll();
@@ -339,6 +380,271 @@ public final class ModulePasting {
         }
         com.magmaguy.betterstructures.worldedit.Schematic.enqueue(new ModularPaste(inputs));
     }
+
+    private void batchPasteNative(Deque<WFCNode> nodes) {
+        Map<Long, List<NativeBlockPlacement>> chunkBlocks = new HashMap<>();
+        Map<Long, List<NativeEntityPlacement>> chunkEntities = new HashMap<>();
+        Map<Long, List<NativeSignPlacement>> chunkSigns = new HashMap<>();
+        Map<Long, List<NativeContainerPlacement>> chunkContainers = new HashMap<>();
+
+        while (!nodes.isEmpty()) {
+            WFCNode node = nodes.poll();
+            ModulesContainer module = node.getModulesContainer();
+            if (module == null || module.getStructureSchematic() == null) continue;
+
+            Location nodeLoc = node.getRealLocation(startLocation);
+            int rotDeg = module.getRotation();
+            StructureSchematic rotated = module.getStructureSchematic().rotate(rotDeg);
+            ModulesConfigFields config = module.getModulesConfigField();
+
+            int baseX = nodeLoc.getBlockX();
+            int baseY = nodeLoc.getBlockY();
+            int baseZ = nodeLoc.getBlockZ();
+
+            for (int y = 0; y < rotated.getHeight(); y++) {
+                for (int z = 0; z < rotated.getLength(); z++) {
+                    for (int x = 0; x < rotated.getWidth(); x++) {
+                        StructureBlock block = rotated.getBlock(x, y, z);
+                        if (block == null || block.blockData() == null) continue;
+                        Material mat = block.blockData().getMaterial();
+
+                        if (mat == Material.BARRIER) continue;
+                        if (createModularWorld && mat.isAir()) continue;
+
+                        int wx = baseX + x;
+                        int wy = baseY + y;
+                        int wz = baseZ + z;
+                        long chunkKey = Chunk.getChunkKey(wx >> 4, wz >> 4);
+
+                        if (block.isSign()) {
+                            chunkSigns.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                    .add(new NativeSignPlacement(new Location(world, wx, wy, wz), block.parsedSign(), config));
+                            SignTextParser.ParsedSign parsed = block.parsedSign();
+                            if (parsed != null && isNativeMarkerSign(parsed)) {
+                                continue;
+                            }
+                        }
+
+                        if (mat == Material.CHEST || mat == Material.TRAPPED_CHEST || mat == Material.BARREL) {
+                            chunkContainers.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                    .add(new NativeContainerPlacement(new Location(world, wx, wy, wz), mat, config));
+                        }
+
+                        chunkBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                .add(new NativeBlockPlacement(wx, wy, wz, block.blockData()));
+                    }
+                }
+            }
+
+            for (StructureEntity entity : rotated.getEntities()) {
+                double ex = baseX + entity.x();
+                double ey = baseY + entity.y();
+                double ez = baseZ + entity.z();
+                long chunkKey = Chunk.getChunkKey(((int) Math.floor(ex)) >> 4, ((int) Math.floor(ez)) >> 4);
+                chunkEntities.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                        .add(new NativeEntityPlacement(new Location(world, ex, ey, ez), entity));
+            }
+        }
+
+        Set<Long> allChunks = new HashSet<>();
+        allChunks.addAll(chunkBlocks.keySet());
+        allChunks.addAll(chunkEntities.keySet());
+        allChunks.addAll(chunkSigns.keySet());
+        allChunks.addAll(chunkContainers.keySet());
+
+        if (allChunks.isEmpty()) {
+            if (createModularWorld) {
+                if (modularWorld == null) modularWorld = createWorld();
+                modularWorld.generationFinished();
+            }
+            return;
+        }
+
+        Set<Chunk> heldChunks = ConcurrentHashMap.newKeySet();
+        AtomicInteger remainingChunks = new AtomicInteger(allChunks.size());
+
+        for (long chunkKey : allChunks) {
+            int cx = (int) chunkKey;
+            int cz = (int) (chunkKey >> 32);
+
+            world.getChunkAtAsync(cx, cz, true).thenAccept(chunk -> {
+                if (chunk == null) {
+                    if (remainingChunks.decrementAndGet() == 0) finishNativePaste(heldChunks);
+                    return;
+                }
+
+                PluginChunkHolds.hold(chunk);
+                heldChunks.add(chunk);
+
+                PlatformScheduler.runRegion(world, cx, cz, () -> {
+                    List<NativeBlockPlacement> blocks = chunkBlocks.getOrDefault(chunkKey, List.of());
+                    blocks.sort(Comparator.comparingInt(NativeBlockPlacement::wy));
+
+                    for (NativeBlockPlacement bp : blocks) {
+                        Block b = world.getBlockAt(bp.wx(), bp.wy(), bp.wz());
+                        b.setBlockData(bp.data(), false);
+                    }
+
+                    List<NativeSignPlacement> signs = chunkSigns.getOrDefault(chunkKey, List.of());
+                    for (NativeSignPlacement sp : signs) {
+                        processNativeSign(sp);
+                    }
+
+                    List<NativeContainerPlacement> containers = chunkContainers.getOrDefault(chunkKey, List.of());
+                    for (NativeContainerPlacement cp : containers) {
+                        processNativeContainer(cp);
+                    }
+
+                    List<NativeEntityPlacement> entities = chunkEntities.getOrDefault(chunkKey, List.of());
+                    for (NativeEntityPlacement ep : entities) {
+                        processNativeEntity(ep);
+                    }
+
+                    if (remainingChunks.decrementAndGet() == 0) {
+                        finishNativePaste(heldChunks);
+                    }
+                });
+            });
+        }
+    }
+
+    private void finishNativePaste(Set<Chunk> heldChunks) {
+        for (Chunk chunk : heldChunks) {
+            PluginChunkHolds.release(chunk);
+        }
+        heldChunks.clear();
+        if (createModularWorld) {
+            if (modularWorld == null) modularWorld = createWorld();
+            modularWorld.generationFinished();
+        }
+    }
+
+    private ModularWorld createWorld() {
+        int moduleSize = moduleGeneratorsConfigFields.getModuleSizeXZ();
+        Location center = new Location(world, startLocation.getBlockX() + (moduleSize % 2) * .5,
+                startLocation.getBlockY(), startLocation.getBlockZ() + (moduleSize % 2) * .5);
+        double size = (2D * moduleGeneratorsConfigFields.getRadius() - 1) * moduleSize;
+        return new ModularWorld(world, worldFolder, List.of(), center, size);
+    }
+
+    private void fill(Container container, String filename) {
+        if (filename == null || filename.isEmpty()) return;
+        if (!barrelContents.containsKey(filename)) {
+            TreasureConfigFields config = TreasureConfig.getConfigFields(filename);
+            barrelContents.put(filename, config == null ? null : config.getChestContents());
+            if (config == null) Logger.warn("Missing modular treasure configuration " + filename);
+        }
+        ChestContents contents = barrelContents.get(filename);
+        if (contents == null) return;
+        contents.rollChestContents(container);
+        ChestFillEvent event = new ChestFillEvent(container, filename);
+        Bukkit.getPluginManager().callEvent(event);
+        if (!event.isCancelled()) container.update(true);
+    }
+
+    private boolean isNativeMarkerSign(SignTextParser.ParsedSign sign) {
+        if (sign == null) return false;
+        String line1 = sign.getFrontLine(0).toLowerCase(Locale.ROOT);
+        if (line1.contains("[spawn]") || line1.contains("[elitemobs]") || line1.contains("[pool:")
+                || line1.contains("[mythicmobs]") || line1.contains("[custom]")) {
+            return true;
+        }
+        for (int i = 0; i < 4; i++) {
+            String line = sign.getFrontLine(i).toLowerCase(Locale.ROOT);
+            if (line.contains("[chest]") || line.contains("[trapped_chest]")) return true;
+        }
+        return false;
+    }
+
+    private void processNativeSign(NativeSignPlacement sp) {
+        Location loc = sp.location();
+        SignTextParser.ParsedSign sign = sp.sign();
+        if (sign == null) return;
+
+        List<String> rawLines = new ArrayList<>();
+        for (int i = 0; i < 4; i++) rawLines.add(sign.getFrontLine(i));
+
+        List<String> lines = new ArrayList<>();
+        for (String line : rawLines) {
+            if (line != null && !line.isBlank() && line.contains("[pool:")) {
+                lines.add(line.replace("]", spawnPoolSuffix + "]"));
+            } else {
+                lines.add(line);
+            }
+        }
+
+        InterpretedSign interpretedSign = new InterpretedSign(loc, lines);
+        interpretedSigns.add(interpretedSign);
+
+        String line1 = lines.get(0).toLowerCase(Locale.ROOT);
+
+        if (line1.contains("[spawn]") && lines.size() > 1) {
+            try {
+                EntityType entityType = EntityType.valueOf(lines.get(1).toUpperCase(Locale.ROOT).trim());
+                Entity entity = world.spawnEntity(entitySpawnLocation(loc), entityType);
+                entity.setPersistent(true);
+                if (entity instanceof LivingEntity living) living.setRemoveWhenFarAway(false);
+            } catch (Exception e) {
+                Logger.warn("Invalid entity type in sign: " + lines.get(1));
+            }
+            return;
+        }
+
+        if (line1.contains("[chest]")) {
+            Block b = world.getBlockAt(loc);
+            b.setType(Material.CHEST, false);
+            if (b.getState() instanceof Container container) fill(container, moduleGeneratorsConfigFields.getTreasureFile());
+            return;
+        }
+
+        if (line1.contains("[trapped_chest]")) {
+            Block b = world.getBlockAt(loc);
+            b.setType(Material.TRAPPED_CHEST, false);
+            if (b.getState() instanceof Container container) fill(container, moduleGeneratorsConfigFields.getTreasureFile());
+            return;
+        }
+
+        if (!createModularWorld) {
+            spawnSignBoss(interpretedSign);
+            return;
+        }
+
+        if (modularWorld == null) modularWorld = createWorld();
+        modularWorld.addSign(interpretedSign);
+        modularWorld.spawnOtherEntitiesAt(interpretedSign);
+    }
+
+    private void processNativeContainer(NativeContainerPlacement cp) {
+        Block block = cp.location().getBlock();
+        if (block.getState() instanceof Container container) {
+            if (cp.material() == Material.BARREL) {
+                ModulesConfigFields config = cp.config();
+                if (!moduleGeneratorsConfigFields.isGenerateLootInBarrels() || (config != null && !config.isGenerateLootInBarrels())) return;
+                String treasure = config != null && config.getBarrelTreasureFilename() != null && !config.getBarrelTreasureFilename().isEmpty()
+                        ? config.getBarrelTreasureFilename() : moduleGeneratorsConfigFields.getBarrelTreasureFilename();
+                fill(container, treasure);
+            } else {
+                fill(container, moduleGeneratorsConfigFields.getTreasureFile());
+            }
+        }
+    }
+
+    private void processNativeEntity(NativeEntityPlacement ep) {
+        StructureEntity se = ep.entity();
+        String entityId = se.entityId();
+        if (entityId != null && entityId.contains("armor_stand")) {
+            ArmorStand armorStand = (ArmorStand) world.spawn(ep.location(), ArmorStand.class, as -> {
+                as.setRotation(se.yaw(), se.pitch());
+                as.setPersistent(true);
+                as.setRemoveWhenFarAway(false);
+            });
+        }
+    }
+
+    private record NativeBlockPlacement(int wx, int wy, int wz, BlockData data) {}
+    private record NativeSignPlacement(Location location, SignTextParser.ParsedSign sign, ModulesConfigFields config) {}
+    private record NativeContainerPlacement(Location location, Material material, ModulesConfigFields config) {}
+    private record NativeEntityPlacement(Location location, StructureEntity entity) {}
 
     private record ModuleInput(Clipboard clipboard, Location location, int rotation, ModulesConfigFields config) { }
 

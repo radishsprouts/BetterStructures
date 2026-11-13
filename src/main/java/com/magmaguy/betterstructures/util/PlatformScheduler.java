@@ -237,7 +237,7 @@ public final class PlatformScheduler {
 
     public static boolean isGlobalTickThread() {
         if (IS_FOLIA) {
-            return Bukkit.isGlobalTickThread();
+            return Bukkit.isGlobalTickThread() || Bukkit.isPrimaryThread();
         }
         return Bukkit.isPrimaryThread();
     }
@@ -248,7 +248,8 @@ public final class PlatformScheduler {
         if (IS_FOLIA) {
             Bukkit.getGlobalRegionScheduler().cancelTasks(plugin());
             Bukkit.getAsyncScheduler().cancelTasks(plugin());
+        } else {
+            Bukkit.getScheduler().cancelTasks(plugin());
         }
-        Bukkit.getScheduler().cancelTasks(plugin());
     }
 }

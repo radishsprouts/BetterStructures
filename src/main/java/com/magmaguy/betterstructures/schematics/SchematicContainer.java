@@ -39,6 +39,8 @@ public class SchematicContainer {
     @Getter
     private final Clipboard clipboard;
     @Getter
+    private final com.magmaguy.betterstructures.schematic.model.StructureSchematic structureSchematic;
+    @Getter
     private final SchematicConfigField schematicConfigField;
     @Getter
     private final GeneratorConfigFields generatorConfigFields;
@@ -63,7 +65,64 @@ public class SchematicContainer {
     private ChestContents barrelContents = null;
     private boolean valid = true;
 
+    public SchematicContainer(com.magmaguy.betterstructures.schematic.model.StructureSchematic structureSchematic, String clipboardFilename, SchematicConfigField schematicConfigField, String configFilename) {
+        this.structureSchematic = structureSchematic;
+        this.clipboard = null;
+        this.clipboardFilename = clipboardFilename;
+        this.schematicConfigField = schematicConfigField;
+        this.configFilename = configFilename;
+        generatorConfigFields = schematicConfigField.getGeneratorConfigFields();
+        if (generatorConfigFields == null) {
+            Logger.warn("Failed to assign generator for configuration of schematic " + schematicConfigField.getFilename() + " ! This means this structure will not appear in the world.");
+            return;
+        }
+        if (!generatorConfigFields.isEnabled()) {
+            valid = false;
+            return;
+        }
+        if (structureSchematic == null) {
+            Logger.warn("Failed to find schematic " + clipboardFilename + " for configuration " + configFilename + "; this structure will not be used.");
+            valid = false;
+            return;
+        }
+
+        // Direct copy from pre-indexed StructureSchematic (O(1) instead of nested triple loop!)
+        for (Vector v : structureSchematic.getChestLocations()) chestLocations.add(v.clone());
+        structureSchematic.getVanillaSpawns().forEach((pos, type) -> vanillaSpawns.put(pos.clone(), type));
+        structureSchematic.getEliteMobsSpawns().forEach((pos, boss) -> eliteMobsSpawns.put(pos.clone(), boss));
+        structureSchematic.getMythicMobsSpawns().forEach((pos, mob) -> mythicMobsSpawns.put(pos.clone(), mob));
+        structureSchematic.getCustomMarkers().forEach((pos, args) -> customMarkers.put(pos.clone(), List.copyOf(args)));
+
+        if ((!eliteMobsAvailable && !eliteMobsSpawns.isEmpty())
+                || (!mythicMobsAvailable && !mythicMobsSpawns.isEmpty())) {
+            Logger.warn(configFilename + " requires an unavailable mob integration; this schematic will not be used.");
+            valid = false;
+            return;
+        }
+        chestContents = generatorConfigFields.getChestContents();
+        barrelContents = generatorConfigFields.getBarrelContents();
+        if (schematicConfigField.getTreasureFile() != null && !schematicConfigField.getTreasureFile().isEmpty()) {
+            TreasureConfigFields treasureConfigFields = TreasureConfig.getConfigFields(schematicConfigField.getTreasureFile());
+            if (treasureConfigFields == null) {
+                Logger.warn("Failed to get treasure configuration " + schematicConfigField.getTreasureFile() + " for schematic " + schematicConfigField.getFilename() + " ! Defaulting to the generator chest treasure.");
+            } else {
+                chestContents = schematicConfigField.getChestContents();
+            }
+        }
+        if (schematicConfigField.getBarrelTreasureFilename() != null && !schematicConfigField.getBarrelTreasureFilename().isEmpty()) {
+            TreasureConfigFields barrelTreasureConfigFields = TreasureConfig.getConfigFields(schematicConfigField.getBarrelTreasureFilename());
+            if (barrelTreasureConfigFields == null) {
+                Logger.warn("Failed to get barrel treasure configuration " + schematicConfigField.getBarrelTreasureFilename() + " for schematic " + schematicConfigField.getFilename() + " ! Defaulting to the generator barrel treasure.");
+            } else {
+                barrelContents = schematicConfigField.getBarrelContents();
+            }
+        }
+        if (valid)
+            generatorConfigFields.getStructureTypes().forEach(structureType -> schematics.put(structureType, this));
+    }
+
     public SchematicContainer(Clipboard clipboard, String clipboardFilename, SchematicConfigField schematicConfigField, String configFilename) {
+        this.structureSchematic = null;
         this.clipboard = clipboard;
         this.clipboardFilename = clipboardFilename;
         this.schematicConfigField = schematicConfigField;

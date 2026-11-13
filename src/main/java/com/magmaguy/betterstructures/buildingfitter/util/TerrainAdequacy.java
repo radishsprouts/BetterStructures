@@ -17,6 +17,32 @@ public class TerrainAdequacy {
         LIQUID
     }
 
+    public static double scan(int scanStep, com.magmaguy.betterstructures.schematic.model.StructureSchematic schematic, Location iteratedLocation, Vector schematicOffset, ScanType scanType) {
+        int width = schematic.getWidth();
+        int depth = schematic.getLength();
+        int height = schematic.getHeight();
+
+        int totalCount = 0;
+        int negativeCount = 0;
+
+        for (int x = 0; x < width; x += scanStep) {
+            for (int y = 0; y < height; y += scanStep) {
+                for (int z = 0; z < depth; z += scanStep) {
+                    org.bukkit.block.data.BlockData blockData = schematic.getBlockData(x, y, z);
+                    Material mat = blockData != null ? blockData.getMaterial() : Material.AIR;
+                    boolean schematicBlockIsAir = mat.isAir();
+                    boolean schematicBlockIsLiquid = mat == Material.WATER || mat == Material.LAVA;
+                    Location projectedLocation = LocationProjector.project(iteratedLocation, schematicOffset, new Vector(x, y, z));
+                    if (!isBlockAdequate(projectedLocation, schematicBlockIsAir, schematicBlockIsLiquid, iteratedLocation.getBlockY() - 1, scanType))
+                        negativeCount++;
+                    totalCount++;
+                }
+            }
+        }
+
+        return 100 - negativeCount * 100D / (double) totalCount;
+    }
+
     public static double scan(int scanStep, Clipboard schematicClipboard, Location iteratedLocation, Vector schematicOffset, ScanType scanType) {
         int width = schematicClipboard.getDimensions().x();
         int depth = schematicClipboard.getDimensions().z();

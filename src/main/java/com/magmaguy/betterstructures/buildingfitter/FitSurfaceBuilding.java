@@ -33,11 +33,21 @@ public class FitSurfaceBuilding extends FitAnything {
         Location originalLocation = new Location(chunk.getWorld(), chunk.getX() * 16D, 0, chunk.getZ() * 16D).add(new Vector(8, 0, 8));
         originalLocation.setY(originalLocation.getWorld().getHighestBlockYAt(originalLocation));
         randomizeSchematicContainer(originalLocation, GeneratorConfigFields.StructureType.SURFACE);
-        if (schematicClipboard == null) {
+        if (schematicClipboard == null && (schematicContainer == null || schematicContainer.getStructureSchematic() == null)) {
             //Bukkit.getLogger().info("Did not spawn structure in biome " + originalLocation.getBlock().getBiome() + " because no valid schematics exist for it.");
             return;
         }
-        schematicOffset = WorldEditUtils.getSchematicOffset(schematicClipboard);
+        if (schematicOffset == null) {
+            if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
+                schematicOffset = new Vector(
+                        schematicContainer.getStructureSchematic().getOffsetX(),
+                        schematicContainer.getStructureSchematic().getOffsetY(),
+                        schematicContainer.getStructureSchematic().getOffsetZ()
+                );
+            } else if (schematicClipboard != null) {
+                schematicOffset = WorldEditUtils.getSchematicOffset(schematicClipboard);
+            }
+        }
         anchor = originalLocation;
         evaluate();
     }
@@ -72,7 +82,12 @@ public class FitSurfaceBuilding extends FitAnything {
         Location iteratedLocation = originalLocation.clone().add(new Vector(chunkX * 16, 0, chunkZ * 16));
 
         if (originalLocation.getWorld().getEnvironment().equals(World.Environment.NETHER)) startingScore = 200;
-        double score = Topology.scan(startingScore, scanStep, schematicClipboard, iteratedLocation, schematicOffset);
+        double score;
+        if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
+            score = Topology.scan(startingScore, scanStep, schematicContainer.getStructureSchematic(), iteratedLocation, schematicOffset);
+        } else {
+            score = Topology.scan(startingScore, scanStep, schematicClipboard, iteratedLocation, schematicOffset);
+        }
 
         //Continue to the next scan in case of poor fit
         if (score == 0) {
@@ -80,7 +95,12 @@ public class FitSurfaceBuilding extends FitAnything {
             return;
         }
 
-        double adequacyScore = TerrainAdequacy.scan(scanStep, schematicClipboard, iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.SURFACE);
+        double adequacyScore;
+        if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
+            adequacyScore = TerrainAdequacy.scan(scanStep, schematicContainer.getStructureSchematic(), iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.SURFACE);
+        } else {
+            adequacyScore = TerrainAdequacy.scan(scanStep, schematicClipboard, iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.SURFACE);
+        }
         //Adequacy has an impact of 50% on the score
         score += (.5 * adequacyScore);
 

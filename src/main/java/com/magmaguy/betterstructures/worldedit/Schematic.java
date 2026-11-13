@@ -221,6 +221,25 @@ public class Schematic {
         }
     }
 
+    public static void pasteSchematic(
+            com.magmaguy.betterstructures.schematic.model.StructureSchematic structureSchematic,
+            Location location,
+            Vector schematicOffset,
+            Function<Boolean, Material> pedestalMaterialProvider,
+            Runnable onComplete) {
+        com.magmaguy.betterstructures.schematic.paste.StructurePasteSession.start(
+                location.getWorld(),
+                location,
+                schematicOffset,
+                structureSchematic,
+                null,
+                pedestalMaterialProvider,
+                null,
+                null,
+                onComplete
+        );
+    }
+
     /**
      * Pastes a schematic using the provided pedestal material provider
      *
@@ -386,6 +405,7 @@ public class Schematic {
      * queue by itself.
      */
     public static void shutdown() {
+        com.magmaguy.betterstructures.schematic.paste.StructurePasteSession.shutdownAll();
         for (PasteOperation operation : pasteQueue) operation.close();
         pasteQueue.clear();
         if (activePasteTask != null) {

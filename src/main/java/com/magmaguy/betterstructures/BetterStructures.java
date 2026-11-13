@@ -86,6 +86,10 @@ public final class BetterStructures extends JavaPlugin {
                 Bukkit.getPluginManager().isPluginEnabled("MythicMobs"));
         // Content parsing runs on a worker thread and must not resolve registry entries itself.
         RegistrySnapshot.capture();
+        if (PlatformScheduler.isFolia()) {
+            startFoliaInitialization();
+            return;
+        }
         MagmaCore.startInitialization(this,
                 new PluginInitializationConfig("BetterStructures", "betterstructures.*", 17, resolveInitializationDependencies()),
                 this::asyncInitialization,
@@ -147,6 +151,7 @@ public final class BetterStructures extends JavaPlugin {
         // Both startup and content reload use this owner. Wait before clearing registries
         // or returning control to Bukkit, which may close the plugin's resource jar.
         MagmaCore.shutdown(this);
+        com.magmaguy.betterstructures.schematic.paste.StructurePasteSession.shutdownAll();
         Schematic.shutdown();
         SchematicClipboardCache.shutdown();
         SchematicContainer.shutdown();
@@ -192,62 +197,80 @@ public final class BetterStructures extends JavaPlugin {
         return List.of();
     }
 
+    private void startFoliaInitialization() {
+        PlatformScheduler.runAsync(() -> {
+            try {
+                asyncInitialization(null);
+                PlatformScheduler.runGlobal(() -> {
+                    try {
+                        syncInitialization(null);
+                        Logger.info("BetterStructures fully initialized!");
+                    } catch (Throwable t) {
+                        t.printStackTrace();
+                    }
+                });
+            } catch (Throwable t) {
+                t.printStackTrace();
+            }
+        });
+    }
+
     private void asyncInitialization(PluginInitializationContext initializationContext) {
-        initializationContext.step("Base Configs");
+        if (initializationContext != null) initializationContext.step("Base Configs");
         new DefaultConfig();
         loadContent(initializationContext);
     }
 
     void loadContent(PluginInitializationContext initializationContext) {
-        if (initializationContext.isShutdownRequested()) return;
-        initializationContext.step("Content Importer");
+        if (initializationContext != null && initializationContext.isShutdownRequested()) return;
+        if (initializationContext != null) initializationContext.step("Content Importer");
         ConfigurationImporter importer = MagmaCore.initializeImporter(this);
-        if (initializationContext.isShutdownRequested()) return;
+        if (initializationContext != null && initializationContext.isShutdownRequested()) return;
         if (importer != null && importer.isEliteMobsContentImported())
             EliteMobs.reloadAfterContentImport();
 
-        initializationContext.step("Treasure Config");
+        if (initializationContext != null) initializationContext.step("Treasure Config");
         new TreasureConfig();
-        if (initializationContext.isShutdownRequested()) return;
-        initializationContext.step("Generator Config");
+        if (initializationContext != null && initializationContext.isShutdownRequested()) return;
+        if (initializationContext != null) initializationContext.step("Generator Config");
         new GeneratorConfig();
-        if (initializationContext.isShutdownRequested()) return;
-        initializationContext.step("Module Generators");
+        if (initializationContext != null && initializationContext.isShutdownRequested()) return;
+        if (initializationContext != null) initializationContext.step("Module Generators");
         new ModuleGeneratorsConfig();
-        if (initializationContext.isShutdownRequested()) return;
-        initializationContext.step("Spawn Pools");
+        if (initializationContext != null && initializationContext.isShutdownRequested()) return;
+        if (initializationContext != null) initializationContext.step("Spawn Pools");
         new SpawnPoolsConfig();
-        if (initializationContext.isShutdownRequested()) return;
-        initializationContext.step("Content Packages");
+        if (initializationContext != null && initializationContext.isShutdownRequested()) return;
+        if (initializationContext != null) initializationContext.step("Content Packages");
         new ContentPackageConfig();
-        if (initializationContext.isShutdownRequested()) return;
-        initializationContext.step("Schematics");
+        if (initializationContext != null && initializationContext.isShutdownRequested()) return;
+        if (initializationContext != null) initializationContext.step("Schematics");
         new SchematicConfig();
-        if (initializationContext.isShutdownRequested()) return;
-        initializationContext.step("Modules");
+        if (initializationContext != null && initializationContext.isShutdownRequested()) return;
+        if (initializationContext != null) initializationContext.step("Modules");
         new ModulesConfig();
     }
 
     private void syncInitialization(PluginInitializationContext initializationContext) {
-        initializationContext.step("Valid Worlds Config");
+        if (initializationContext != null) initializationContext.step("Valid Worlds Config");
         new ValidWorldsConfig();
 
-        initializationContext.step("NMS Adapter");
+        if (initializationContext != null) initializationContext.step("NMS Adapter");
         NMSManager.initializeAdapter(this);
 
-        initializationContext.step("WorldEdit Check");
+        if (initializationContext != null) initializationContext.step("WorldEdit Check");
         // Runs on the first tick, once WorldEdit has finished choosing its platform.
         PlatformScheduler.runGlobal(WorldEditCompatibility::checkAdapterOnStartup);
 
-        initializationContext.step("Components Folder");
+        if (initializationContext != null) initializationContext.step("Components Folder");
         ComponentsConfigFolder.initialize();
 
-        initializationContext.step("Event Listeners");
+        if (initializationContext != null) initializationContext.step("Event Listeners");
         Bukkit.getPluginManager().registerEvents(new NewChunkLoadEvent(), this);
         Bukkit.getPluginManager().registerEvents(new FirstTimeSetupWarner(), this);
         Bukkit.getPluginManager().registerEvents(new ValidWorldsConfig.ValidWorldsConfigEvents(), this);
 
-        initializationContext.step("Commands");
+        if (initializationContext != null) initializationContext.step("Commands");
         CommandManager commandManager = new CommandManager(this, "betterstructures");
         commandManager.registerCommand(new LootifyCommand());
         commandManager.registerCommand(new PlaceCommand());
@@ -283,17 +306,21 @@ public final class BetterStructures extends JavaPlugin {
         commandManager.registerCommand(new GenerateModulesCommand());
         commandManager.registerCommand(new BetterStructuresCommand());
 
-        initializationContext.step("Version Check");
-        MagmaCore.checkVersionUpdate("103241", "https://nightbreak.io/plugin/betterstructures/");
+        if (initializationContext != null) initializationContext.step("Version Check");
+        if (!PlatformScheduler.isFolia()) {
+            MagmaCore.checkVersionUpdate("103241", "https://nightbreak.io/plugin/betterstructures/");
+        }
 
-        initializationContext.step("WorldGuard Integration");
+        if (initializationContext != null) initializationContext.step("WorldGuard Integration");
         if (Bukkit.getPluginManager().isPluginEnabled("WorldGuard") &&
                 Bukkit.getPluginManager().isPluginEnabled("EliteMobs")) {
             Bukkit.getPluginManager().registerEvents(new WorldGuard(), this);
         }
 
-        initializationContext.step("Metrics");
-        metrics = new Metrics(this, 19523);
+        if (initializationContext != null) initializationContext.step("Metrics");
+        if (!PlatformScheduler.isFolia()) {
+            metrics = new Metrics(this, 19523);
+        }
     }
 
     public void reloadImportedContent(CommandSender commandSender) {

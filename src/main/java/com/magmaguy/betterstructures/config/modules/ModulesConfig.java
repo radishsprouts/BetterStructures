@@ -6,22 +6,28 @@ import com.magmaguy.betterstructures.util.SchematicFileUtils;
 import com.magmaguy.betterstructures.worldedit.SchematicClipboardCache;
 import com.magmaguy.betterstructures.worldedit.SchematicConversionLog;
 import com.magmaguy.betterstructures.worldedit.SchematicDiskCache;
+import com.magmaguy.betterstructures.schematic.model.StructureSchematic;
+import com.magmaguy.betterstructures.schematic.reader.SchematicReader;
 import com.magmaguy.magmacore.MagmaCore;
 import com.magmaguy.magmacore.config.CustomConfig;
 import com.sk89q.worldedit.extent.clipboard.Clipboard;
 import lombok.Getter;
+import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ModulesConfig extends CustomConfig {
     @Getter
     private static final HashMap<String, ModulesConfigFields> moduleConfigurations = new HashMap<>();
+    private static final Map<File, StructureSchematic> structureSchematicCache = new ConcurrentHashMap<>();
     //Module schematics are parsed on a single thread, so re-reading unchanged ones on every content
     //reload costs even more per file here than it does for structures.
     private static final SchematicClipboardCache clipboardCache = new SchematicClipboardCache();
@@ -46,45 +52,48 @@ public class ModulesConfig extends CustomConfig {
         discoveredModuleFiles.sort(
                 Comparator.comparing(File::getAbsolutePath));
         Map<String, File> moduleSourcesByFilename = new HashMap<>();
-        //Modules that are gone stop being cached before anything reads the cache, so a deleted
-        //module schematic can never be served out of the previous load.
-        int forgotten = clipboardCache.retainOnly(discoveredModuleFiles);
-        if (!discoveredModuleFiles.isEmpty()) {
-            //Module schematics ship at an older DataVersion just like structure schematics do, so
-            //without this every cold start re-ran Mojang's data converter over every module file —
-            //the last remaining source of legacy-conversion cost and log spam at startup.
-            SchematicDiskCache diskCache =
-                    new SchematicDiskCache(SchematicDiskCache.moduleCacheFolder());
-            try (SchematicConversionLog.Session conversionLog = SchematicConversionLog.capture()) {
-                for (File file : discoveredModuleFiles) {
-                    if (shutdownRequested()) return;
-                    File previous = moduleSourcesByFilename.putIfAbsent(
-                            file.getName(),
-                            file);
-                    if (previous != null && !previous.equals(file)) {
-                        throw new IllegalStateException(
-                                "Duplicate module schematic filename '"
-                                        + file.getName() + "' exists at both "
-                                        + previous.getPath() + " and "
-                                        + file.getPath()
-                                        + "; module configuration lookup would be ambiguous.");
-                    }
-                    Clipboard clipboard = clipboardCache.get(file);
-                    if (clipboard == null) {
-                        SchematicDiskCache.LoadedClipboard loaded = diskCache.loadWithIdentity(file);
-                        clipboard = loaded == null ? null : loaded.clipboard();
-                        if (loaded != null) clipboardCache.put(file, loaded);
-                    }
-                    if (clipboard == null) {
-                        throw new IllegalStateException(
-                                "Failed to load module schematic " + file.getPath()
-                                        + "; refusing to initialize a partial module registry.");
-                    }
-                    clipboards.put(file, clipboard);
-                }
+
+        for (File file : discoveredModuleFiles) {
+            File previous = moduleSourcesByFilename.putIfAbsent(file.getName(), file);
+            if (previous != null && !previous.equals(file)) {
+                throw new IllegalStateException(
+                        "Duplicate module schematic filename '"
+                                + file.getName() + "' exists at both "
+                                + previous.getPath() + " and "
+                                + file.getPath()
+                                + "; module configuration lookup would be ambiguous.");
             }
-            if (diskCache.filesRead() > 0 || forgotten > 0)
-                diskCache.pruneStaleEntries(discoveredModuleFiles);
+        }
+
+        // Load structure schematics natively using Folia-safe Pure Java reader
+        Map<File, StructureSchematic> structureSchematics = loadStructureSchematics(discoveredModuleFiles);
+
+        // Optionally load WorldEdit clipboards if WorldEdit is present
+        boolean worldEditEnabled = Bukkit.getPluginManager().isPluginEnabled("WorldEdit");
+        if (worldEditEnabled) {
+            int forgotten = clipboardCache.retainOnly(discoveredModuleFiles);
+            if (!discoveredModuleFiles.isEmpty()) {
+                SchematicDiskCache diskCache =
+                        new SchematicDiskCache(SchematicDiskCache.moduleCacheFolder());
+                try (SchematicConversionLog.Session conversionLog = SchematicConversionLog.capture()) {
+                    for (File file : discoveredModuleFiles) {
+                        if (shutdownRequested()) return;
+                        Clipboard clipboard = clipboardCache.get(file);
+                        if (clipboard == null) {
+                            SchematicDiskCache.LoadedClipboard loaded = diskCache.loadWithIdentity(file);
+                            clipboard = loaded == null ? null : loaded.clipboard();
+                            if (loaded != null) clipboardCache.put(file, loaded);
+                        }
+                        if (clipboard != null) {
+                            clipboards.put(file, clipboard);
+                        }
+                    }
+                } catch (Exception | LinkageError e) {
+                    // WorldEdit failed or unsupported
+                }
+                if (diskCache.filesRead() > 0 || forgotten > 0)
+                    diskCache.pruneStaleEntries(discoveredModuleFiles);
+            }
         }
 
         if (shutdownRequested()) return;
@@ -108,8 +117,10 @@ public class ModulesConfig extends CustomConfig {
             if (!modulesConfigFields.isEnabled()) continue;
             String schematicFilename = SchematicFileUtils.convertFromConfigurationFilename(modulesConfigFields.getFilename());
             File source = moduleSourcesByFilename.get(schematicFilename);
+            StructureSchematic schematic = source == null ? null : structureSchematics.get(source);
             Clipboard clipboard = source == null ? null : clipboards.get(source);
-            if (clipboard == null) {
+
+            if (schematic == null && clipboard == null) {
                 throw new IllegalStateException(
                         "Enabled module configuration "
                                 + modulesConfigFields.getFilename()
@@ -117,15 +128,50 @@ public class ModulesConfig extends CustomConfig {
                                 + schematicFilename
                                 + "; refusing to initialize a partial module registry.");
             }
-            ModulesContainer.initializeModulesContainer(
-                    clipboard,
-                    schematicFilename,
-                    modulesConfigFields,
-                    modulesConfigFields.getFilename());
+
+            if (schematic != null) {
+                ModulesContainer.initializeModulesContainer(
+                        schematic,
+                        schematicFilename,
+                        modulesConfigFields,
+                        modulesConfigFields.getFilename());
+            } else {
+                ModulesContainer.initializeModulesContainer(
+                        clipboard,
+                        schematicFilename,
+                        modulesConfigFields,
+                        modulesConfigFields.getFilename());
+            }
         }
 
         if (!shutdownRequested()) ModulesContainer.postInitializeModulesContainer();
 
+    }
+
+    private static Map<File, StructureSchematic> loadStructureSchematics(List<File> files) {
+        Map<File, StructureSchematic> result = new LinkedHashMap<>();
+        if (files == null || files.isEmpty()) return result;
+
+        files.parallelStream().forEach(file -> {
+            StructureSchematic cached = structureSchematicCache.get(file);
+            if (cached != null) return;
+            try {
+                StructureSchematic parsed = SchematicReader.read(file);
+                if (parsed != null) {
+                    structureSchematicCache.put(file, parsed);
+                }
+            } catch (Exception e) {
+                // Ignore
+            }
+        });
+
+        for (File file : files) {
+            StructureSchematic parsed = structureSchematicCache.get(file);
+            if (parsed != null) {
+                result.put(file, parsed);
+            }
+        }
+        return result;
     }
 
     private static boolean shutdownRequested() {
