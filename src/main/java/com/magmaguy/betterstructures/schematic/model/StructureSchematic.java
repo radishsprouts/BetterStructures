@@ -132,59 +132,78 @@ public final class StructureSchematic {
 
     private void processSignMarker(int x, int y, int z, SignTextParser.ParsedSign sign) {
         Vector pos = new Vector(x, y, z);
-        String line1 = sign.getFrontLine(0).toLowerCase(Locale.ROOT).trim();
-
-        if (line1.contains("[spawn]")) {
-            String line2 = sign.getFrontLine(1).toUpperCase(Locale.ROOT).replace("\"", "").trim();
-            if (!line2.isEmpty()) {
-                EntityType entityType;
-                try {
-                    entityType = EntityType.valueOf(line2);
-                } catch (IllegalArgumentException ex) {
-                    if (line2.equalsIgnoreCase("WITHER_CRYSTAL")) {
-                        entityType = EntityType.END_CRYSTAL;
-                    } else {
-                        entityType = null;
-                    }
-                }
-                if (entityType != null) {
-                    vanillaSpawns.put(pos, entityType);
-                }
-            }
-        } else if (line1.contains("[elitemobs]")) {
-            StringBuilder bossFilename = new StringBuilder();
-            for (int i = 1; i < 4; i++) {
-                String line = sign.getFrontLine(i).trim();
-                if (!line.isEmpty()) bossFilename.append(line);
-            }
-            if (bossFilename.length() > 0) {
-                eliteMobsSpawns.put(pos, bossFilename.toString());
-            }
-        } else if (line1.contains("[mythicmobs]")) {
-            String mob = sign.getFrontLine(1).trim();
-            String level = sign.getFrontLine(2).trim();
-            if (!mob.isEmpty()) {
-                mythicMobsSpawns.put(pos, level.isEmpty() ? mob : mob + ":" + level);
-            }
-        } else if (line1.contains("[custom]")) {
-            List<String> lines = new ArrayList<>();
-            for (int i = 1; i < 4; i++) {
-                lines.add(sign.getFrontLine(i).trim());
-            }
-            if (lines.stream().anyMatch(s -> !s.isEmpty())) {
-                customMarkers.put(pos, List.copyOf(lines));
-            }
+        List<String> lines = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            lines.add(sign.getFrontLine(i).trim());
         }
 
-        // Modular dungeon specific sign markers (can be on any line)
-        for (int i = 0; i < 4; i++) {
-            String line = sign.getFrontLine(i).toLowerCase(Locale.ROOT);
-            if (line.contains("[chest]")) {
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            String lower = line.toLowerCase(Locale.ROOT);
+
+            if (lower.contains("[spawn]")) {
+                String entityName = null;
+                for (int j = i + 1; j < lines.size(); j++) {
+                    String candidate = lines.get(j).replace("\"", "").trim();
+                    if (!candidate.isEmpty()) {
+                        entityName = candidate.toUpperCase(Locale.ROOT);
+                        break;
+                    }
+                }
+                if (entityName != null) {
+                    EntityType entityType;
+                    try {
+                        entityType = EntityType.valueOf(entityName);
+                    } catch (IllegalArgumentException ex) {
+                        entityType = entityName.equalsIgnoreCase("WITHER_CRYSTAL") ? EntityType.END_CRYSTAL : null;
+                    }
+                    if (entityType != null) {
+                        vanillaSpawns.put(pos, entityType);
+                    }
+                }
+                return;
+            }
+
+            if (lower.contains("[elitemobs]")) {
+                StringBuilder bossFilename = new StringBuilder();
+                for (int j = i + 1; j < lines.size(); j++) {
+                    String part = lines.get(j).trim();
+                    if (!part.isEmpty()) bossFilename.append(part);
+                }
+                if (bossFilename.length() > 0) {
+                    eliteMobsSpawns.put(pos, bossFilename.toString());
+                }
+                return;
+            }
+
+            if (lower.contains("[mythicmobs]")) {
+                String mob = (i + 1 < lines.size()) ? lines.get(i + 1).trim() : "";
+                String level = (i + 2 < lines.size()) ? lines.get(i + 2).trim() : "";
+                if (!mob.isEmpty()) {
+                    mythicMobsSpawns.put(pos, level.isEmpty() ? mob : mob + ":" + level);
+                }
+                return;
+            }
+
+            if (lower.contains("[custom]")) {
+                List<String> customLines = new ArrayList<>();
+                for (int j = i + 1; j < lines.size(); j++) {
+                    customLines.add(lines.get(j).trim());
+                }
+                if (customLines.stream().anyMatch(s -> !s.isEmpty())) {
+                    customMarkers.put(pos, List.copyOf(customLines));
+                }
+                return;
+            }
+
+            if (lower.contains("[chest]")) {
                 chestMarkers.put(pos, Material.CHEST);
-                break;
-            } else if (line.contains("[trapped_chest]")) {
+                return;
+            }
+
+            if (lower.contains("[trapped_chest]")) {
                 chestMarkers.put(pos, Material.TRAPPED_CHEST);
-                break;
+                return;
             }
         }
     }

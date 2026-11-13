@@ -3,6 +3,7 @@ package com.magmaguy.betterstructures.schematic.entity;
 import com.magmaguy.betterstructures.schematic.nbt.SimpleNbt;
 import com.magmaguy.betterstructures.schematic.sign.SignTextParser;
 import com.magmaguy.magmacore.util.Logger;
+import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.entity.ArmorStand;
@@ -195,7 +196,21 @@ public final class EntityNbtApplier {
             armorStand.setMarker(marker);
         }
 
-        Logger.info("[EntityNbtApplier] ArmorStand attrs: invisible=" + invisible + ", small=" + small + ", arms=" + arms + ", noBasePlate=" + noBasePlate + ", marker=" + marker);
+        // If this ArmorStand is a 3D prop placeholder (has freeminecraftmodels PDC)
+        // and FreeMinecraftModels plugin is NOT installed/active,
+        // hide the untextured wooden stick figure so it does not obstruct players or look broken.
+        SimpleNbt.CompoundTag bukkitValues = tag.getCompound("BukkitValues");
+        boolean isPropModel = bukkitValues != null &&
+                (bukkitValues.containsKey("freeminecraftmodels:entity") || bukkitValues.containsKey("freeminecraftmodels:prop"));
+
+        if (isPropModel && !Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
+            armorStand.setVisible(false);
+            armorStand.setMarker(true);
+            armorStand.setBasePlate(false);
+            Logger.info("[EntityNbtApplier] Prop ArmorStand hidden (FreeMinecraftModels not active): " + armorStand.getLocation());
+        }
+
+        Logger.info("[EntityNbtApplier] ArmorStand attrs: invisible=" + invisible + ", small=" + small + ", arms=" + arms + ", noBasePlate=" + noBasePlate + ", marker=" + marker + ", isProp=" + isPropModel);
 
         // Pose
         SimpleNbt.CompoundTag pose = tag.getCompound("Pose");

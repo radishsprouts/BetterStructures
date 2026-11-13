@@ -3,6 +3,8 @@ package com.magmaguy.betterstructures.schematic.paste;
 import com.magmaguy.betterstructures.api.BuildCustomMarkerEvent;
 import com.magmaguy.betterstructures.api.ChestFillEvent;
 import com.magmaguy.betterstructures.chests.ChestContents;
+import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfig;
+import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfigFields;
 import com.magmaguy.betterstructures.schematic.entity.EntityNbtApplier;
 import com.magmaguy.betterstructures.schematic.model.StructureBlock;
 import com.magmaguy.betterstructures.schematic.model.StructureEntity;
@@ -179,76 +181,173 @@ public final class ChunkPasteTask implements Runnable {
 
     private boolean isMarkerSign(SignTextParser.ParsedSign sign) {
         if (sign == null) return false;
-        String line1 = sign.getFrontLine(0).toLowerCase(Locale.ROOT);
-        if (line1.contains("[spawn]") || line1.contains("[elitemobs]")
-                || line1.contains("[mythicmobs]") || line1.contains("[custom]")) {
-            return true;
-        }
         for (int i = 0; i < 4; i++) {
-            String line = sign.getFrontLine(i).toLowerCase(Locale.ROOT);
-            if (line.contains("[chest]") || line.contains("[trapped_chest]")) return true;
+            String line = sign.getFrontLine(i).toLowerCase(Locale.ROOT).trim();
+            if (line.contains("[spawn]") || line.contains("[elitemobs]")
+                    || line.contains("[pool:") || line.contains("[mythicmobs]")
+                    || line.contains("[custom]") || line.contains("[chest]")
+                    || line.contains("[trapped_chest]")) {
+                return true;
+            }
         }
         return false;
     }
 
     private void handleMarkerSign(StructureBlockEntry entry, SignTextParser.ParsedSign sign) {
-        Location loc = new Location(world, entry.worldX() + 0.5, entry.worldY(), entry.worldZ() + 0.5);
-        // Ensure marker block is air
-        world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ()).setType(Material.AIR, false);
+        int bx = entry.worldX();
+        int by = entry.worldY();
+        int bz = entry.worldZ();
 
-        String line1 = sign.getFrontLine(0).toLowerCase(Locale.ROOT).trim();
-        Logger.info("[ChunkPasteTask] Processing marker sign at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + "): line1='" + line1 + "', line2='" + sign.getFrontLine(1) + "'");
+        // 1. Ensure marker sign block itself is turned into AIR
+        world.getBlockAt(bx, by, bz).setType(Material.AIR, false);
 
-        if (line1.contains("[spawn]")) {
-            String line2 = sign.getFrontLine(1).toUpperCase(Locale.ROOT).replace("\"", "").trim();
-            if (!line2.isEmpty()) {
-                try {
-                    EntityType type = EntityType.valueOf(line2.equalsIgnoreCase("WITHER_CRYSTAL") ? "END_CRYSTAL" : line2);
-                    Entity entity = world.spawnEntity(loc, type);
-                    entity.setPersistent(true);
-                    if (entity instanceof LivingEntity living) {
-                        living.setRemoveWhenFarAway(false);
+        // 2. Prevent suffocation: if head space (by + 1) is solid, clear it so 2-block mobs don't suffocate immediately
+        Block headBlock = world.getBlockAt(bx, by + 1, bz);
+        if (headBlock.getType().isSolid()) {
+            headBlock.setType(Material.AIR, false);
+        }
+
+        Location loc = new Location(world, bx + 0.5, by, bz + 0.5);
+
+        List<String> lines = new ArrayList<>();
+        for (int i = 0; i < 4; i++) {
+            lines.add(sign.getFrontLine(i).trim());
+        }
+
+        Logger.info("[ChunkPasteTask] Processing marker sign at (" + bx + "," + by + "," + bz + "): lines=" + lines);
+
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            String lower = line.toLowerCase(Locale.ROOT);
+
+            // [spawn] Vanilla Mob
+            if (lower.contains("[spawn]")) {
+                String entityName = null;
+                for (int j = i + 1; j < lines.size(); j++) {
+                    String candidate = lines.get(j).replace("\"", "").trim();
+                    if (!candidate.isEmpty()) {
+                        entityName = candidate.toUpperCase(Locale.ROOT);
+                        break;
                     }
-                    Logger.info("[ChunkPasteTask] Spawned mob " + type + " at " + loc);
-                } catch (Exception e) {
-                    Logger.warn("[ChunkPasteTask] Failed to spawn entity from sign: " + line2 + " (" + e.getMessage() + ")");
                 }
+                if (entityName != null) {
+                    spawnVanillaMob(loc, entityName);
+                } else {
+                    Logger.warn("[ChunkPasteTask] [spawn] sign at (" + bx + "," + by + "," + bz + ") has no entity type specified!");
+                }
+                return;
             }
-        } else if (line1.contains("[elitemobs]")) {
-            StringBuilder bossFile = new StringBuilder();
-            for (int i = 1; i < 4; i++) {
-                String line = sign.getFrontLine(i).trim();
-                if (!line.isEmpty()) bossFile.append(line);
+
+            // [pool:...] Spawn pool
+            if (lower.contains("[pool:")) {
+                String poolName = SpawnPoolsConfig.extractPoolName(line);
+                if (poolName != null) {
+                    spawnPoolMob(loc, poolName);
+                } else {
+                    Logger.warn("[ChunkPasteTask] Could not extract pool name from: " + line);
+                }
+                return;
             }
-            if (bossFile.length() > 0) {
-                EliteMobs.Spawn(loc, bossFile.toString());
-                Logger.info("[ChunkPasteTask] Spawned EliteMob " + bossFile + " at " + loc);
+
+            // [elitemobs]
+            if (lower.contains("[elitemobs]")) {
+                StringBuilder bossFile = new StringBuilder();
+                for (int j = i + 1; j < lines.size(); j++) {
+                    String part = lines.get(j).trim();
+                    if (!part.isEmpty()) bossFile.append(part);
+                }
+                if (bossFile.length() > 0) {
+                    EliteMobs.Spawn(loc, bossFile.toString());
+                    Logger.info("[ChunkPasteTask] Spawned EliteMob " + bossFile + " at " + loc);
+                }
+                return;
             }
-        } else if (line1.contains("[mythicmobs]")) {
-            String mob = sign.getFrontLine(1).trim();
-            String level = sign.getFrontLine(2).trim();
-            if (!mob.isEmpty()) {
-                MythicMobs.Spawn(loc, level.isEmpty() ? mob : mob + ":" + level);
-                Logger.info("[ChunkPasteTask] Spawned MythicMob " + mob + " at " + loc);
+
+            // [mythicmobs]
+            if (lower.contains("[mythicmobs]")) {
+                String mob = (i + 1 < lines.size()) ? lines.get(i + 1).trim() : "";
+                String level = (i + 2 < lines.size()) ? lines.get(i + 2).trim() : "";
+                if (!mob.isEmpty()) {
+                    MythicMobs.Spawn(loc, level.isEmpty() ? mob : mob + ":" + level);
+                    Logger.info("[ChunkPasteTask] Spawned MythicMob " + mob + " at " + loc);
+                }
+                return;
             }
-        } else if (line1.contains("[custom]")) {
-            List<String> args = new ArrayList<>();
-            for (int i = 1; i < 4; i++) args.add(sign.getFrontLine(i).trim());
-            Bukkit.getPluginManager().callEvent(new BuildCustomMarkerEvent(session.getFitter(), loc, args));
-            Logger.info("[ChunkPasteTask] Dispatched custom marker at " + loc + ": " + args);
+
+            // [custom]
+            if (lower.contains("[custom]")) {
+                List<String> args = new ArrayList<>();
+                for (int j = i + 1; j < lines.size(); j++) args.add(lines.get(j).trim());
+                Bukkit.getPluginManager().callEvent(new BuildCustomMarkerEvent(session.getFitter(), loc, args));
+                Logger.info("[ChunkPasteTask] Dispatched custom marker at " + loc + ": " + args);
+                return;
+            }
+
+            // [chest] & [trapped_chest]
+            if (lower.contains("[chest]")) {
+                world.getBlockAt(bx, by, bz).setType(Material.CHEST, false);
+                Logger.info("[ChunkPasteTask] Replaced sign with chest at (" + bx + "," + by + "," + bz + ")");
+                return;
+            }
+            if (lower.contains("[trapped_chest]")) {
+                world.getBlockAt(bx, by, bz).setType(Material.TRAPPED_CHEST, false);
+                Logger.info("[ChunkPasteTask] Replaced sign with trapped_chest at (" + bx + "," + by + "," + bz + ")");
+                return;
+            }
+        }
+    }
+
+    private void spawnVanillaMob(Location loc, String entityName) {
+        try {
+            EntityType type = EntityType.valueOf(entityName.equalsIgnoreCase("WITHER_CRYSTAL") ? "END_CRYSTAL" : entityName);
+            Class<? extends Entity> entityClass = type.getEntityClass();
+            if (entityClass != null && LivingEntity.class.isAssignableFrom(entityClass)) {
+                @SuppressWarnings("unchecked")
+                Class<? extends LivingEntity> livingClass = (Class<? extends LivingEntity>) entityClass;
+                world.spawn(loc, livingClass, living -> {
+                    living.setRemoveWhenFarAway(false);
+                    living.setPersistent(true);
+                    living.setNoDamageTicks(60);
+                    living.setFallDistance(0);
+                    Logger.info("[ChunkPasteTask] Spawned mob " + type + " at " + loc + " with persistence guaranteed");
+                });
+            } else {
+                Entity entity = world.spawnEntity(loc, type);
+                entity.setPersistent(true);
+                if (entity instanceof LivingEntity living) {
+                    living.setRemoveWhenFarAway(false);
+                    living.setNoDamageTicks(60);
+                    living.setFallDistance(0);
+                }
+                Logger.info("[ChunkPasteTask] Spawned entity " + type + " at " + loc + " (fallback)");
+            }
+        } catch (Exception e) {
+            Logger.warn("[ChunkPasteTask] Failed to spawn entity from sign: " + entityName + " (" + e.getMessage() + ")");
+        }
+    }
+
+    private void spawnPoolMob(Location loc, String poolName) {
+        String poolFilename = poolName.endsWith(".yml") ? poolName : poolName + ".yml";
+        SpawnPoolsConfigFields pool = SpawnPoolsConfig.getConfigFields(poolFilename);
+        if (pool == null) {
+            Logger.warn("[ChunkPasteTask] Could not find spawn pool " + poolFilename);
+            return;
+        }
+        String bossFilename = SpawnPoolsConfig.pickBossFilename(pool);
+        if (bossFilename == null) {
+            Logger.warn("[ChunkPasteTask] Spawn pool " + poolFilename + " has no entries");
+            return;
+        }
+        if (Bukkit.getPluginManager().isPluginEnabled("EliteMobs")) {
+            EliteMobs.Spawn(loc, bossFilename);
+            Logger.info("[ChunkPasteTask] Spawned EliteMob boss from pool: " + bossFilename + " at " + loc);
         } else {
-            // Chest markers
-            for (int i = 0; i < 4; i++) {
-                String line = sign.getFrontLine(i).toLowerCase(Locale.ROOT);
-                if (line.contains("[chest]")) {
-                    world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ()).setType(Material.CHEST, false);
-                    Logger.info("[ChunkPasteTask] Replaced sign with chest at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + ")");
-                    break;
-                } else if (line.contains("[trapped_chest]")) {
-                    world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ()).setType(Material.TRAPPED_CHEST, false);
-                    Logger.info("[ChunkPasteTask] Replaced sign with trapped_chest at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + ")");
-                    break;
-                }
+            String cleanName = bossFilename.replace(".yml", "").toUpperCase(Locale.ROOT);
+            try {
+                EntityType type = EntityType.valueOf(cleanName);
+                spawnVanillaMob(loc, type.name());
+            } catch (Exception ignored) {
+                Logger.warn("[ChunkPasteTask] EliteMobs not enabled for boss " + bossFilename + " from pool " + poolFilename);
             }
         }
     }
