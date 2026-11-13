@@ -159,11 +159,24 @@ public class NewChunkLoadEvent implements Listener {
                 continue;
             }
             scanned++;
-            try {
-                scanNewChunk(world.getChunkAt(key.x(), key.z()), key);
-            } catch (Throwable failure) {
-                deferredNewChunks.add(key);
-                MetadataHandler.PLUGIN.getLogger().warning("Failed deferred chunk scan at " + key + ": " + failure.getMessage());
+            if (PlatformScheduler.isFolia()) {
+                PlatformScheduler.runRegion(world, key.x(), key.z(), () -> {
+                    try {
+                        if (world.isChunkLoaded(key.x(), key.z())) {
+                            scanNewChunk(world.getChunkAt(key.x(), key.z()), key);
+                        }
+                    } catch (Throwable failure) {
+                        deferredNewChunks.add(key);
+                        MetadataHandler.PLUGIN.getLogger().warning("Failed deferred chunk scan at " + key + ": " + failure.getMessage());
+                    }
+                });
+            } else {
+                try {
+                    scanNewChunk(world.getChunkAt(key.x(), key.z()), key);
+                } catch (Throwable failure) {
+                    deferredNewChunks.add(key);
+                    MetadataHandler.PLUGIN.getLogger().warning("Failed deferred chunk scan at " + key + ": " + failure.getMessage());
+                }
             }
         }
         if (deferredNewChunks.isEmpty()) remainingNewInspections = 0;

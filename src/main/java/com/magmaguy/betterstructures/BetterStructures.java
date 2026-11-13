@@ -256,7 +256,9 @@ public final class BetterStructures extends JavaPlugin {
         new ValidWorldsConfig();
 
         if (initializationContext != null) initializationContext.step("NMS Adapter");
-        NMSManager.initializeAdapter(this);
+        if (!PlatformScheduler.isFolia()) {
+            NMSManager.initializeAdapter(this);
+        }
 
         if (initializationContext != null) initializationContext.step("WorldEdit Check");
         // Runs on the first tick, once WorldEdit has finished choosing its platform.

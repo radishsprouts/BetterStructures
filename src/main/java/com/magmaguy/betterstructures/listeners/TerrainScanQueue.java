@@ -148,6 +148,17 @@ final class TerrainScanQueue {
             Job job = request.job();
             int x = TerrainReads.chunkX(request.chunk()), z = TerrainReads.chunkZ(request.chunk());
             if (job.closed || job.world.isChunkLoaded(x, z)) continue;
+            if (PlatformScheduler.isFolia()) {
+                final Request currentRequest = request;
+                job.world.getChunkAtAsync(x, z, true).thenAccept(loadedChunk -> {
+                    if (job.closed || loadedChunk == null || !loadedChunk.isLoaded()) return;
+                    job.hold(currentRequest.chunk(), loadedChunk);
+                }).exceptionally(ex -> {
+                    job.requested.remove(currentRequest.chunk());
+                    return null;
+                });
+                return;
+            }
             try {
                 job.hold(request.chunk(), job.world.getChunkAt(x, z));
             } catch (Throwable failure) {

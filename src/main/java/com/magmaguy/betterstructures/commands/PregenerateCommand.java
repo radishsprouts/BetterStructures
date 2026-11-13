@@ -49,7 +49,7 @@ public class PregenerateCommand extends AdvancedCommand {
                 center = commandData.getPlayerSender().getLocation();
                 break;
             case "WORLD_CENTER":
-                center = new Location(world, 0, world.getHighestBlockYAt(0, 0), 0);
+                center = new Location(world, 0, world.getSpawnLocation().getBlockY(), 0);
                 break;
             case "WORLD_SPAWN":
                 center = world.getSpawnLocation();

@@ -747,10 +747,11 @@ public final class ModulePasting {
                     boolean fast = createModularWorld && block.blockData().getLightEmission() == 0
                             && !(block.blockData() instanceof Directional) && !(block.blockData() instanceof Rail)
                             && !(block.blockData() instanceof Sign);
-                    if (phase == 0 && fast)
+                    if (phase == 0 && fast && !PlatformScheduler.isFolia() && NMSManager.getAdapter() != null)
                         NMSManager.getAdapter().setBlockInNativeDataPalette(world, block.location().getBlockX(),
                                 block.location().getBlockY(), block.location().getBlockZ(), block.blockData(), false);
                     else if (phase == 1 && !fast) block.location().getBlock().setBlockData(block.blockData(), false);
+                    else if (phase == 0 && fast) block.location().getBlock().setBlockData(block.blockData(), false);
                 } else {
                     if (nextEntity == null) { moduleIndex++; module = null; return; }
                     var origin = module.clipboard().getOrigin().toVector3();

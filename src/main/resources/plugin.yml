@@ -19,10 +19,16 @@ commands:
   betterstructures:
     description: Main command
     # Any existing child grant permits root access; each child still checks its own permission.
-    permission: 'betterstructures.*;betterstructures.setup;betterstructures.initialize;betterstructures.generatemodules'
+    permission: 'betterstructures.*;betterstructures.setup;betterstructures.initialize;betterstructures.generatemodules;betterstructures.warn;betterstructures.teleport'
     aliases:
       - bs
 permissions:
+  betterstructures.warn:
+    description: Gives admins access to structure generation warnings and teleportation
+    default: op
+  betterstructures.teleport:
+    description: Gives access to teleport to generated structures
+    default: op
   betterstructures.setup:
     description: Gives admins access to the /betterstructures setup command
     default: op
