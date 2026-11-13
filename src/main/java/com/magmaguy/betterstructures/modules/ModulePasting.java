@@ -11,6 +11,7 @@ import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfigFields;
 import com.magmaguy.betterstructures.config.treasures.TreasureConfig;
 import com.magmaguy.betterstructures.config.treasures.TreasureConfigFields;
 import com.magmaguy.betterstructures.thirdparty.EliteMobs;
+import com.magmaguy.betterstructures.schematic.entity.EntityNbtApplier;
 import com.magmaguy.betterstructures.schematic.model.StructureBlock;
 import com.magmaguy.betterstructures.schematic.model.StructureEntity;
 import com.magmaguy.betterstructures.schematic.model.StructureSchematic;
@@ -631,13 +632,36 @@ public final class ModulePasting {
 
     private void processNativeEntity(NativeEntityPlacement ep) {
         StructureEntity se = ep.entity();
-        String entityId = se.entityId();
-        if (entityId != null && entityId.contains("armor_stand")) {
-            ArmorStand armorStand = (ArmorStand) world.spawn(ep.location(), ArmorStand.class, as -> {
-                as.setRotation(se.yaw(), se.pitch());
-                as.setPersistent(true);
-                as.setRemoveWhenFarAway(false);
-            });
+        String rawId = se.entityId();
+        if (rawId == null || rawId.isBlank()) return;
+
+        String cleanId = rawId.replace("minecraft:", "").toUpperCase(Locale.ROOT);
+        EntityType entityType;
+        try {
+            entityType = EntityType.valueOf(cleanId);
+        } catch (IllegalArgumentException e) {
+            return;
+        }
+
+        try {
+            Class<? extends Entity> entityClass = entityType.getEntityClass();
+            if (entityClass != null) {
+                world.spawn(ep.location(), entityClass, entity -> {
+                    entity.setRotation(se.yaw(), se.pitch());
+                    EntityNbtApplier.applyNbt(entity, se.nbt());
+                });
+            } else {
+                Entity entity = world.spawnEntity(ep.location(), entityType);
+                entity.setRotation(se.yaw(), se.pitch());
+                EntityNbtApplier.applyNbt(entity, se.nbt());
+            }
+        } catch (Exception e) {
+            try {
+                Entity entity = world.spawnEntity(ep.location(), entityType);
+                entity.setRotation(se.yaw(), se.pitch());
+                EntityNbtApplier.applyNbt(entity, se.nbt());
+            } catch (Exception ignored) {
+            }
         }
     }
 

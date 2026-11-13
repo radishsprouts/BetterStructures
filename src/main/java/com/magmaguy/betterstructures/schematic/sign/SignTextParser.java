@@ -80,21 +80,25 @@ public final class SignTextParser {
             return new ParsedSign(frontLines, backLines, frontColor, backColor, frontGlowing, backGlowing, isWaxed);
         }
 
-        isWaxed = nbt.getByte("is_waxed", (byte) 0) != 0;
+        // Unwrap Sponge schematic "Data" tag if present
+        SimpleNbt.CompoundTag dataTag = nbt.getCompound("Data");
+        SimpleNbt.CompoundTag target = dataTag != null ? dataTag : nbt;
+
+        isWaxed = target.getByte("is_waxed", (byte) 0) != 0;
 
         // Check for Modern 1.20+ front_text
-        SimpleNbt.CompoundTag frontTextTag = nbt.getCompound("front_text");
+        SimpleNbt.CompoundTag frontTextTag = target.getCompound("front_text");
         if (frontTextTag != null) {
             parseSignSide(frontTextTag, frontLines);
             frontColor = parseColor(frontTextTag.getString("color", "black"));
             frontGlowing = frontTextTag.getByte("has_glowing_text", (byte) 0) != 0;
         } else {
             // Check for Legacy Text1..Text4
-            parseLegacyLines(nbt, frontLines);
+            parseLegacyLines(target, frontLines);
         }
 
         // Check for Modern 1.20+ back_text
-        SimpleNbt.CompoundTag backTextTag = nbt.getCompound("back_text");
+        SimpleNbt.CompoundTag backTextTag = target.getCompound("back_text");
         if (backTextTag != null) {
             parseSignSide(backTextTag, backLines);
             backColor = parseColor(backTextTag.getString("color", "black"));
@@ -199,7 +203,11 @@ public final class SignTextParser {
         if (element == null || element.isJsonNull()) return "";
 
         if (element.isJsonPrimitive()) {
-            return element.getAsString();
+            String str = element.getAsString();
+            if (str.startsWith("\"") && str.endsWith("\"") && str.length() >= 2) {
+                return str.substring(1, str.length() - 1);
+            }
+            return str;
         }
 
         if (element.isJsonArray()) {

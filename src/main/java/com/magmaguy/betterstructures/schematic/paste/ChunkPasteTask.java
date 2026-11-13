@@ -3,6 +3,7 @@ package com.magmaguy.betterstructures.schematic.paste;
 import com.magmaguy.betterstructures.api.BuildCustomMarkerEvent;
 import com.magmaguy.betterstructures.api.ChestFillEvent;
 import com.magmaguy.betterstructures.chests.ChestContents;
+import com.magmaguy.betterstructures.schematic.entity.EntityNbtApplier;
 import com.magmaguy.betterstructures.schematic.model.StructureBlock;
 import com.magmaguy.betterstructures.schematic.model.StructureEntity;
 import com.magmaguy.betterstructures.schematic.sign.SignTextParser;
@@ -192,7 +193,11 @@ public final class ChunkPasteTask implements Runnable {
 
     private void handleMarkerSign(StructureBlockEntry entry, SignTextParser.ParsedSign sign) {
         Location loc = new Location(world, entry.worldX() + 0.5, entry.worldY(), entry.worldZ() + 0.5);
-        String line1 = sign.getFrontLine(0).toLowerCase(Locale.ROOT);
+        // Ensure marker block is air
+        world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ()).setType(Material.AIR, false);
+
+        String line1 = sign.getFrontLine(0).toLowerCase(Locale.ROOT).trim();
+        Logger.info("[ChunkPasteTask] Processing marker sign at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + "): line1='" + line1 + "', line2='" + sign.getFrontLine(1) + "'");
 
         if (line1.contains("[spawn]")) {
             String line2 = sign.getFrontLine(1).toUpperCase(Locale.ROOT).replace("\"", "").trim();
@@ -204,8 +209,9 @@ public final class ChunkPasteTask implements Runnable {
                     if (entity instanceof LivingEntity living) {
                         living.setRemoveWhenFarAway(false);
                     }
+                    Logger.info("[ChunkPasteTask] Spawned mob " + type + " at " + loc);
                 } catch (Exception e) {
-                    Logger.warn("Failed to spawn entity from sign: " + line2);
+                    Logger.warn("[ChunkPasteTask] Failed to spawn entity from sign: " + line2 + " (" + e.getMessage() + ")");
                 }
             }
         } else if (line1.contains("[elitemobs]")) {
@@ -216,26 +222,31 @@ public final class ChunkPasteTask implements Runnable {
             }
             if (bossFile.length() > 0) {
                 EliteMobs.Spawn(loc, bossFile.toString());
+                Logger.info("[ChunkPasteTask] Spawned EliteMob " + bossFile + " at " + loc);
             }
         } else if (line1.contains("[mythicmobs]")) {
             String mob = sign.getFrontLine(1).trim();
             String level = sign.getFrontLine(2).trim();
             if (!mob.isEmpty()) {
                 MythicMobs.Spawn(loc, level.isEmpty() ? mob : mob + ":" + level);
+                Logger.info("[ChunkPasteTask] Spawned MythicMob " + mob + " at " + loc);
             }
         } else if (line1.contains("[custom]")) {
             List<String> args = new ArrayList<>();
             for (int i = 1; i < 4; i++) args.add(sign.getFrontLine(i).trim());
             Bukkit.getPluginManager().callEvent(new BuildCustomMarkerEvent(session.getFitter(), loc, args));
+            Logger.info("[ChunkPasteTask] Dispatched custom marker at " + loc + ": " + args);
         } else {
             // Chest markers
             for (int i = 0; i < 4; i++) {
                 String line = sign.getFrontLine(i).toLowerCase(Locale.ROOT);
                 if (line.contains("[chest]")) {
                     world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ()).setType(Material.CHEST, false);
+                    Logger.info("[ChunkPasteTask] Replaced sign with chest at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + ")");
                     break;
                 } else if (line.contains("[trapped_chest]")) {
                     world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ()).setType(Material.TRAPPED_CHEST, false);
+                    Logger.info("[ChunkPasteTask] Replaced sign with trapped_chest at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + ")");
                     break;
                 }
             }
@@ -264,6 +275,7 @@ public final class ChunkPasteTask implements Runnable {
         }
 
         sign.update(true, false);
+        Logger.info("[ChunkPasteTask] Restored sign at (" + block.getX() + "," + block.getY() + "," + block.getZ() + "): front[0]='" + signData.getFrontLine(0) + "', front[1]='" + signData.getFrontLine(1) + "'");
     }
 
     private void fillContainer(Container container, StructureBlockEntry entry) {
@@ -280,14 +292,38 @@ public final class ChunkPasteTask implements Runnable {
 
     private void spawnEntity(StructureEntityEntry entry) {
         Location loc = new Location(world, entry.worldX(), entry.worldY(), entry.worldZ(), entry.entity().yaw(), entry.entity().pitch());
-        String entityId = entry.entity().entityId();
+        String rawId = entry.entity().entityId();
+        if (rawId == null || rawId.isBlank()) return;
 
-        if (entityId != null && entityId.contains("armor_stand")) {
-            world.spawn(loc, ArmorStand.class, armorStand -> {
-                armorStand.setPersistent(true);
-                armorStand.setRemoveWhenFarAway(false);
-                // Additional NBT tags can be populated if present
-            });
+        String cleanId = rawId.replace("minecraft:", "").toUpperCase(Locale.ROOT);
+        EntityType entityType;
+        try {
+            entityType = EntityType.valueOf(cleanId);
+        } catch (IllegalArgumentException e) {
+            Logger.warn("Unknown entity type for schematic spawn: " + rawId);
+            return;
+        }
+
+        try {
+            Class<? extends Entity> entityClass = entityType.getEntityClass();
+            if (entityClass != null) {
+                world.spawn(loc, entityClass, entity -> {
+                    EntityNbtApplier.applyNbt(entity, entry.entity().nbt());
+                    Logger.info("[ChunkPasteTask] Spawned entity " + entityType + " at " + loc + " with NBT applied");
+                });
+            } else {
+                Entity entity = world.spawnEntity(loc, entityType);
+                EntityNbtApplier.applyNbt(entity, entry.entity().nbt());
+                Logger.info("[ChunkPasteTask] Spawned entity " + entityType + " at " + loc + " with NBT applied (fallback)");
+            }
+        } catch (Exception e) {
+            try {
+                Entity entity = world.spawnEntity(loc, entityType);
+                EntityNbtApplier.applyNbt(entity, entry.entity().nbt());
+                Logger.info("[ChunkPasteTask] Spawned entity " + entityType + " at " + loc + " with NBT applied (catch fallback)");
+            } catch (Exception ex) {
+                Logger.warn("[ChunkPasteTask] Failed to spawn entity " + rawId + " at " + loc + ": " + ex.getMessage());
+            }
         }
     }
 }

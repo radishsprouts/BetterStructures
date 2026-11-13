@@ -64,6 +64,27 @@ class SignTextParserTest {
     }
 
     @Test
+    void readsSpongeSchematicDataWrappedSigns() {
+        // Sponge schematics wrap tile entity payload under a "Data" compound tag
+        SimpleNbt.CompoundTag inner = sign(List.of(
+                new SimpleNbt.StringTag("[spawn]"),
+                new SimpleNbt.StringTag("skeleton"),
+                new SimpleNbt.StringTag(""),
+                new SimpleNbt.StringTag("")
+        ));
+        SimpleNbt.CompoundTag wrapped = new SimpleNbt.CompoundTag(Map.of(
+                "Id", new SimpleNbt.StringTag("minecraft:sign"),
+                "Pos", new SimpleNbt.IntArrayTag(new int[]{7, 3, 5}),
+                "Data", inner
+        ));
+        SignTextParser.ParsedSign parsed = SignTextParser.parse(wrapped);
+
+        assertEquals("[spawn]", parsed.getFrontLine(0));
+        assertEquals("skeleton", parsed.getFrontLine(1));
+        assertEquals("", parsed.getFrontLine(2));
+    }
+
+    @Test
     void legacyTextLinesKeepTheirReader() {
         SimpleNbt.CompoundTag nbt = new SimpleNbt.CompoundTag(Map.of(
                 "Text1", new SimpleNbt.StringTag("{\"text\":\"[spawn]\"}"),

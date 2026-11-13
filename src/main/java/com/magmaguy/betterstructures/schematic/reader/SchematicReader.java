@@ -149,7 +149,8 @@ public final class SchematicReader {
 
                 if (x >= 0 && x < width && y >= 0 && y < height && z >= 0 && z < length) {
                     int blockIdx = (y * length + z) * width + x;
-                    blockEntities.put(blockIdx, tileTag);
+                    SimpleNbt.CompoundTag dataTag = tileTag.getCompound("Data");
+                    blockEntities.put(blockIdx, dataTag != null ? dataTag : tileTag);
 
                     // Check if block at this position is a sign
                     BlockData blockData = blocks[blockIdx];
@@ -168,11 +169,19 @@ public final class SchematicReader {
             for (SimpleNbt.Tag tag : entitiesList) {
                 if (!(tag instanceof SimpleNbt.CompoundTag entityTag)) continue;
 
+                SimpleNbt.CompoundTag dataTag = entityTag.getCompound("Data");
                 String id = entityTag.getString("Id", "");
                 if (id.isEmpty()) id = entityTag.getString("id", "");
+                if (id.isEmpty() && dataTag != null) {
+                    id = dataTag.getString("id", "");
+                    if (id.isEmpty()) id = dataTag.getString("Id", "");
+                }
 
                 double x = 0, y = 0, z = 0;
                 SimpleNbt.ListTag posList = entityTag.getList("Pos");
+                if ((posList == null || posList.size() < 3) && dataTag != null) {
+                    posList = dataTag.getList("Pos");
+                }
                 if (posList != null && posList.size() >= 3) {
                     x = ((Number) posList.get(0).getValue()).doubleValue();
                     y = ((Number) posList.get(1).getValue()).doubleValue();
@@ -181,6 +190,9 @@ public final class SchematicReader {
 
                 float yaw = 0, pitch = 0;
                 SimpleNbt.ListTag rotList = entityTag.getList("Rotation");
+                if ((rotList == null || rotList.size() < 2) && dataTag != null) {
+                    rotList = dataTag.getList("Rotation");
+                }
                 if (rotList != null && rotList.size() >= 2) {
                     yaw = ((Number) rotList.get(0).getValue()).floatValue();
                     pitch = ((Number) rotList.get(1).getValue()).floatValue();
