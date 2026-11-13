@@ -4,6 +4,7 @@ main: com.magmaguy.betterstructures.BetterStructures
 api-version: '1.21.4'
 folia-supported: true
 softdepend:
+  - BetterModel
   - EliteMobs
   - MythicMobs
   - WorldGuard

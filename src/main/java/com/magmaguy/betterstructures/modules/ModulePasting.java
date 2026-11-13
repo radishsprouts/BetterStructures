@@ -10,6 +10,7 @@ import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfig;
 import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfigFields;
 import com.magmaguy.betterstructures.config.treasures.TreasureConfig;
 import com.magmaguy.betterstructures.config.treasures.TreasureConfigFields;
+import com.magmaguy.betterstructures.thirdparty.BetterModelBridge;
 import com.magmaguy.betterstructures.thirdparty.EliteMobs;
 import com.magmaguy.betterstructures.schematic.entity.EntityNbtApplier;
 import com.magmaguy.betterstructures.schematic.model.StructureBlock;
@@ -633,10 +634,22 @@ public final class ModulePasting {
     private void processNativeEntity(NativeEntityPlacement ep) {
         StructureEntity se = ep.entity();
 
-        // If this entity is a 3D prop placeholder (FreeMinecraftModels) and FMM is not installed,
-        // do not spawn the armor stand at all to prevent ghost collisions and suffocating nearby mobs.
-        if (EntityNbtApplier.isPropModel(se.nbt()) && !Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
-            return;
+        // Handle 3D prop models (BetterModel / FreeMinecraftModels)
+        if (EntityNbtApplier.isPropModel(se.nbt())) {
+            String propName = EntityNbtApplier.getPropModelName(se.nbt());
+            if (BetterModelBridge.isEnabled() && propName != null) {
+                boolean spawned = BetterModelBridge.spawnProp(ep.location(), propName);
+                if (spawned) {
+                    Logger.info("[ModulePasting] Spawned BetterModel prop: " + propName + " at " + ep.location());
+                } else {
+                    Logger.warn("[ModulePasting] BetterModel prop not found in models: " + propName + " at " + ep.location());
+                }
+            } else if (!Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
+                Logger.info("[ModulePasting] Skipped prop ArmorStand spawn (FreeMinecraftModels not active): " + propName + " at " + ep.location());
+            }
+            if (!Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
+                return;
+            }
         }
 
         String rawId = se.entityId();

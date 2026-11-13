@@ -41,6 +41,26 @@ public final class EntityNbtApplier {
     }
 
     /**
+     * Extracts the 3D prop model identifier (e.g. "bs_prop_pack_table") from schematic entity NBT.
+     */
+    public static @Nullable String getPropModelName(@Nullable SimpleNbt.CompoundTag entityNbt) {
+        if (entityNbt == null) return null;
+        SimpleNbt.CompoundTag dataTag = entityNbt.getCompound("Data");
+        SimpleNbt.CompoundTag tag = dataTag != null ? dataTag : entityNbt;
+        SimpleNbt.CompoundTag bukkitValues = tag.getCompound("BukkitValues");
+        if (bukkitValues == null) return null;
+        if (bukkitValues.containsKey("freeminecraftmodels:entity")) {
+            String val = bukkitValues.getString("freeminecraftmodels:entity");
+            if (val != null && !val.isBlank()) return val;
+        }
+        if (bukkitValues.containsKey("freeminecraftmodels:prop")) {
+            String val = bukkitValues.getString("freeminecraftmodels:prop");
+            if (val != null && !val.isBlank()) return val;
+        }
+        return null;
+    }
+
+    /**
      * Applies all stored NBT properties from a schematic entity tag to a Bukkit entity.
      *
      * @param entity    The spawned Bukkit entity.

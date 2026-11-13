@@ -9,6 +9,7 @@ import com.magmaguy.betterstructures.schematic.entity.EntityNbtApplier;
 import com.magmaguy.betterstructures.schematic.model.StructureBlock;
 import com.magmaguy.betterstructures.schematic.model.StructureEntity;
 import com.magmaguy.betterstructures.schematic.sign.SignTextParser;
+import com.magmaguy.betterstructures.thirdparty.BetterModelBridge;
 import com.magmaguy.betterstructures.thirdparty.EliteMobs;
 import com.magmaguy.betterstructures.thirdparty.MythicMobs;
 import com.magmaguy.betterstructures.util.PlatformScheduler;
@@ -390,14 +391,27 @@ public final class ChunkPasteTask implements Runnable {
     }
 
     private void spawnEntity(StructureEntityEntry entry) {
-        // If this entity is a 3D prop placeholder (FreeMinecraftModels) and FMM is not installed,
-        // do not spawn the armor stand at all to prevent ghost collisions and suffocating nearby mobs.
-        if (EntityNbtApplier.isPropModel(entry.entity().nbt()) && !Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
-            Logger.info("[ChunkPasteTask] Skipped prop ArmorStand spawn (FreeMinecraftModels not active): " + entry.entity().entityId() + " at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + ")");
-            return;
+        Location loc = new Location(world, entry.worldX(), entry.worldY(), entry.worldZ(), entry.entity().yaw(), entry.entity().pitch());
+
+        // Handle 3D prop models (BetterModel / FreeMinecraftModels)
+        if (EntityNbtApplier.isPropModel(entry.entity().nbt())) {
+            String propName = EntityNbtApplier.getPropModelName(entry.entity().nbt());
+            if (BetterModelBridge.isEnabled() && propName != null) {
+                boolean spawned = BetterModelBridge.spawnProp(loc, propName);
+                if (spawned) {
+                    Logger.info("[ChunkPasteTask] Spawned BetterModel prop: " + propName + " at " + loc);
+                } else {
+                    Logger.warn("[ChunkPasteTask] BetterModel prop not found in models: " + propName + " at " + loc);
+                }
+            } else if (!Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
+                Logger.info("[ChunkPasteTask] Skipped prop ArmorStand spawn (FreeMinecraftModels not active): " + propName + " at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + ")");
+            }
+            // If FreeMinecraftModels is not installed, never spawn the vanilla ArmorStand to prevent collisions
+            if (!Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
+                return;
+            }
         }
 
-        Location loc = new Location(world, entry.worldX(), entry.worldY(), entry.worldZ(), entry.entity().yaw(), entry.entity().pitch());
         String rawId = entry.entity().entityId();
         if (rawId == null || rawId.isBlank()) return;
 
