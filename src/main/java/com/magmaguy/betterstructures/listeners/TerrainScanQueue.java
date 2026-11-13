@@ -3,23 +3,18 @@ package com.magmaguy.betterstructures.listeners;
 import com.magmaguy.betterstructures.MetadataHandler;
 import com.magmaguy.betterstructures.buildingfitter.FitAnything;
 import com.magmaguy.betterstructures.buildingfitter.util.TerrainReads;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.betterstructures.util.PluginChunkHolds;
 import com.magmaguy.magmacore.util.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.World;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.lang.reflect.Method;
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -42,9 +37,9 @@ final class TerrainScanQueue {
     private static final long WARNING_INTERVAL_NANOS = TimeUnit.MINUTES.toNanos(1);
     // A plugin ticket brings its chunk and every chunk within this distance of it to full status.
     private static final int TICKET_RADIUS = 2;
-    private static final Map<NewChunkLoadEvent.LoadingChunkKey, Job> jobs = new LinkedHashMap<>();
-    private static final ArrayDeque<Request> synchronousRequests = new ArrayDeque<>();
-    private static BukkitTask driver;
+    private static final Map<NewChunkLoadEvent.LoadingChunkKey, Job> jobs = new ConcurrentHashMap<>();
+    private static final ConcurrentLinkedQueue<Request> synchronousRequests = new ConcurrentLinkedQueue<>();
+    private static PlatformScheduler.TaskHandle driver;
     private static boolean warned;
     private static long lastWarning;
     private static int suppressedWarnings;
@@ -58,7 +53,7 @@ final class TerrainScanQueue {
         PluginChunkHolds.hold(grid);
         jobs.put(key, new Job(key, grid, scans));
         if (driver == null)
-            driver = Bukkit.getScheduler().runTaskTimer(MetadataHandler.PLUGIN, TerrainScanQueue::tick, 1L, 1L);
+            driver = PlatformScheduler.runGlobalTimer(TerrainScanQueue::tick, 1L, 1L);
     }
 
     /**
@@ -97,7 +92,7 @@ final class TerrainScanQueue {
         loadNextSynchronousRequest();
         // A scan can place a structure, and anything that runs then may load a chunk and add a job.
         for (Job job : new ArrayList<>(jobs.values())) {
-            if (job.closed) continue;
+            if (job.closed || job.running) continue;
             // An unloaded world took its chunks and tickets with it.
             if (Bukkit.getWorld(job.world.getUID()) != job.world || !job.grid.isLoaded()) {
                 finish(job);
@@ -110,13 +105,31 @@ final class TerrainScanQueue {
                 }
                 continue;
             }
-            job.run();
-            if (job.waiting.isEmpty()) {
-                finish(job);
-                continue;
+            if (PlatformScheduler.isFolia()) {
+                job.running = true;
+                PlatformScheduler.runRegion(job.world, job.grid.getX(), job.grid.getZ(), () -> {
+                    try {
+                        if (job.closed) return;
+                        job.run();
+                        if (job.waiting.isEmpty()) {
+                            finish(job);
+                            return;
+                        }
+                        job.waitingSince = System.nanoTime();
+                        job.ready();
+                    } finally {
+                        job.running = false;
+                    }
+                });
+            } else {
+                job.run();
+                if (job.waiting.isEmpty()) {
+                    finish(job);
+                    continue;
+                }
+                job.waitingSince = System.nanoTime();
+                job.ready();
             }
-            job.waitingSince = System.nanoTime();
-            job.ready();
         }
         if (jobs.isEmpty() && synchronousRequests.isEmpty() && driver != null) {
             driver.cancel();
@@ -184,6 +197,7 @@ final class TerrainScanQueue {
         private long waitingSince;
         private boolean started;
         private boolean closed;
+        private volatile boolean running;
 
         private Job(NewChunkLoadEvent.LoadingChunkKey key, Chunk grid, List<Supplier<FitAnything>> scans) {
             this.key = key;

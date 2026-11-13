@@ -4,6 +4,7 @@ import com.magmaguy.betterstructures.MetadataHandler;
 import com.magmaguy.betterstructures.api.WorldGenerationFinishEvent;
 import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfig;
 import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfigFields;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.betterstructures.util.SchematicFileUtils;
 import com.magmaguy.betterstructures.worldedit.Schematic;
 import com.magmaguy.betterstructures.worldedit.SchematicClipboardCache;
@@ -18,7 +19,6 @@ import com.sk89q.worldedit.extent.clipboard.Clipboard;
 import lombok.Getter;
 import org.bukkit.*;
 import org.bukkit.block.Block;
-import org.bukkit.scheduler.BukkitRunnable;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -197,16 +197,14 @@ public class ModularWorld {
     }
 
     public void spawnOtherEntities() {
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                for (ModulePasting.InterpretedSign otherLocation : List.copyOf(otherLocations))
-                    spawnOtherEntitiesAt(otherLocation);
-                //got to keep the memory clear for this one, unfortunately
-                otherLocations.clear();
-                generationFinished();
-            }
-        }.runTask(MetadataHandler.PLUGIN);
+        Location targetLoc = center != null ? center : new Location(world, 0, 64, 0);
+        PlatformScheduler.runRegion(targetLoc, () -> {
+            for (ModulePasting.InterpretedSign otherLocation : List.copyOf(otherLocations))
+                spawnOtherEntitiesAt(otherLocation);
+            //got to keep the memory clear for this one, unfortunately
+            otherLocations.clear();
+            generationFinished();
+        });
     }
 
     void spawnOtherEntitiesAt(ModulePasting.InterpretedSign otherLocation) {

@@ -37,7 +37,7 @@ public final class RegistrySnapshot {
      * enable covers every later content reload.
      */
     public static void capture() {
-        if (!Bukkit.isPrimaryThread())
+        if (!PlatformScheduler.isGlobalTickThread())
             throw new IllegalStateException("Registry snapshots must be captured on the server thread.");
         enchantments = copy(Registry.ENCHANTMENT);
         biomes = copy(Registry.BIOME);

@@ -45,9 +45,9 @@ public class ChunkPregenerator implements Listener {
     private int structuresPastedTotal = 0;
     private int structuresPastedLast30s = 0;
     private Integer expectedChunksTotal = null; // Cached calculation
-    private BukkitTask statsTask;
-    private BukkitTask tpsMonitorTask;
-    private BukkitTask currentWorkloadTask;
+    private PlatformScheduler.TaskHandle statsTask;
+    private PlatformScheduler.TaskHandle tpsMonitorTask;
+    private PlatformScheduler.TaskHandle currentWorkloadTask;
     private volatile boolean isCancelled = false;
     private volatile boolean isPaused = false;
     private boolean isFinished = false;
@@ -88,10 +88,10 @@ public class ChunkPregenerator implements Listener {
         activePregenerators.add(this);
 
         // Start stats reporting task (every 30 seconds = 600 ticks)
-        statsTask = Bukkit.getScheduler().runTaskTimer(MetadataHandler.PLUGIN, this::reportStats, 600L, 600L);
+        statsTask = PlatformScheduler.runGlobalTimer(this::reportStats, 600L, 600L);
 
         // Start TPS monitoring task (every 2 seconds = 40 ticks)
-        tpsMonitorTask = Bukkit.getScheduler().runTaskTimer(MetadataHandler.PLUGIN, this::checkTPSAndPause, 40L, 40L);
+        tpsMonitorTask = PlatformScheduler.runGlobalTimer(this::checkTPSAndPause, 40L, 40L);
 
         // Start with radius 0 (center chunk)
         generateNextLayer();
@@ -182,7 +182,11 @@ public class ChunkPregenerator implements Listener {
         }
 
         // Store the task so we can cancel it if needed
-        currentWorkloadTask = workload.runTaskTimer(MetadataHandler.PLUGIN, 0, 1);
+        if (PlatformScheduler.isFolia()) {
+            currentWorkloadTask = PlatformScheduler.runGlobalTimer(workload::run, 1L, 1L);
+        } else {
+            currentWorkloadTask = workload.runTaskTimer(MetadataHandler.PLUGIN, 0, 1)::cancel;
+        }
     }
 
     private boolean generateSquareLayer(WorkloadRunnable workload, int radius) {
@@ -267,6 +271,16 @@ public class ChunkPregenerator implements Listener {
     }
 
     private void generateChunk(int chunkX, int chunkZ, String chunkKey) {
+        if (PlatformScheduler.isFolia()) {
+            world.getChunkAtAsync(chunkX, chunkZ, true).whenComplete((chunk, throwable) -> {
+                if (throwable != null || chunk == null || !chunk.isLoaded()) {
+                    generatedChunks.remove(chunkKey);
+                    Logger.warn("Failed to generate chunk at (" + chunkX + ", " + chunkZ + "): "
+                            + (throwable != null ? throwable.getMessage() : "Chunk load was refused"));
+                }
+            });
+            return;
+        }
         try {
             Chunk chunk = world.getChunkAt(chunkX, chunkZ);
             if (!chunk.isLoaded()) {
@@ -340,8 +354,8 @@ public class ChunkPregenerator implements Listener {
     public void cancel() {
         if (isCancelled || isFinished) return;
         isCancelled = true;
-        if (Bukkit.isPrimaryThread()) onCancelled();
-        else Bukkit.getScheduler().runTask(MetadataHandler.PLUGIN, this::onCancelled);
+        if (PlatformScheduler.isGlobalTickThread()) onCancelled();
+        else PlatformScheduler.runGlobal(this::onCancelled);
     }
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)

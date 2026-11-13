@@ -2,6 +2,7 @@ package com.magmaguy.betterstructures.modules;
 
 import com.magmaguy.betterstructures.MetadataHandler;
 import com.magmaguy.betterstructures.config.modulegenerators.ModuleGeneratorsConfigFields;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.WorldFolderResolver;
 import lombok.Getter;
@@ -204,7 +205,7 @@ public class WFCGenerator {
 
     private void startArrangingModules() {
         updateProgressBar("Starting generation...");
-        Bukkit.getScheduler().runTaskAsynchronously(MetadataHandler.PLUGIN, () -> start(startingModule));
+        PlatformScheduler.runAsync(() -> start(startingModule));
     }
 
     private void start(String startingModule) {
@@ -226,7 +227,7 @@ public class WFCGenerator {
         } finally {
             isGenerating = false;
             boolean generationCompleted = completed && !isCancelled;
-            runOnPrimaryThread(generationCompleted ? this::finishGeneration : this::cleanup);
+            runOnGenerationThread(generationCompleted ? this::finishGeneration : this::cleanup);
         }
     }
 
@@ -377,8 +378,22 @@ public class WFCGenerator {
     }
 
     private static void runOnPrimaryThread(Runnable runnable) {
-        if (Bukkit.isPrimaryThread()) runnable.run();
+        if (PlatformScheduler.isGlobalTickThread()) runnable.run();
         else if (MetadataHandler.PLUGIN != null && MetadataHandler.PLUGIN.isEnabled())
-            Bukkit.getScheduler().runTask(MetadataHandler.PLUGIN, runnable);
+            PlatformScheduler.runGlobal(runnable);
+    }
+
+    private void runOnGenerationThread(Runnable runnable) {
+        if (PlatformScheduler.isFolia()) {
+            if (startLocation != null && startLocation.getWorld() != null) {
+                PlatformScheduler.runRegion(startLocation, runnable);
+            } else {
+                PlatformScheduler.runGlobal(runnable);
+            }
+        } else {
+            if (Bukkit.isPrimaryThread()) runnable.run();
+            else if (MetadataHandler.PLUGIN != null && MetadataHandler.PLUGIN.isEnabled())
+                PlatformScheduler.runGlobal(runnable);
+        }
     }
 }

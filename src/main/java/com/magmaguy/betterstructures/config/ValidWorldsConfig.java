@@ -2,6 +2,7 @@ package com.magmaguy.betterstructures.config;
 
 import com.magmaguy.betterstructures.MetadataHandler;
 import com.magmaguy.betterstructures.thirdparty.EliteMobs;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.magmacore.config.ConfigurationEngine;
 import com.magmaguy.magmacore.config.ConfigurationFile;
 import com.magmaguy.magmacore.util.Logger;
@@ -15,7 +16,6 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.world.WorldLoadEvent;
 import org.bukkit.event.world.WorldUnloadEvent;
-import org.bukkit.scheduler.BukkitRunnable;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -149,12 +149,7 @@ public class ValidWorldsConfig extends ConfigurationFile {
             unregisterWorld(event.getWorld());
             if (MetadataHandler.PLUGIN == null || !MetadataHandler.PLUGIN.isEnabled())
                 return;
-            new BukkitRunnable() {
-                @Override
-                public void run() {
-                    pruneMissingWorldEntry(worldName);
-                }
-            }.runTaskLater(MetadataHandler.PLUGIN, UNLOAD_PRUNE_DELAY_TICKS);
+            PlatformScheduler.runGlobalLater(() -> pruneMissingWorldEntry(worldName), UNLOAD_PRUNE_DELAY_TICKS);
         }
     }
 }

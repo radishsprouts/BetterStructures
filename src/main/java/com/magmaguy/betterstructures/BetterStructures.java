@@ -21,6 +21,7 @@ import com.magmaguy.betterstructures.schematics.SchematicContainer;
 import com.magmaguy.betterstructures.thirdparty.EliteMobs;
 import com.magmaguy.betterstructures.thirdparty.WorldGuard;
 import com.magmaguy.betterstructures.util.ChunkPregenerator;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.betterstructures.util.PluginChunkHolds;
 import com.magmaguy.betterstructures.util.RegistrySnapshot;
 import com.magmaguy.betterstructures.worldedit.Schematic;
@@ -155,7 +156,7 @@ public final class BetterStructures extends JavaPlugin {
         ModulesContainer.shutdown();
         WFCGenerator.shutdown();
         PluginChunkHolds.shutdown();
-        Bukkit.getServer().getScheduler().cancelTasks(MetadataHandler.PLUGIN);
+        PlatformScheduler.cancelAllTasks();
         HandlerList.unregisterAll(MetadataHandler.PLUGIN);
         if (shutdownDuringInitialization) {
             Bukkit.getLogger().info("[BetterStructures] Shutdown during initialization.");
@@ -236,7 +237,7 @@ public final class BetterStructures extends JavaPlugin {
 
         initializationContext.step("WorldEdit Check");
         // Runs on the first tick, once WorldEdit has finished choosing its platform.
-        Bukkit.getScheduler().runTask(this, WorldEditCompatibility::checkAdapterOnStartup);
+        PlatformScheduler.runGlobal(WorldEditCompatibility::checkAdapterOnStartup);
 
         initializationContext.step("Components Folder");
         ComponentsConfigFolder.initialize();
@@ -297,8 +298,8 @@ public final class BetterStructures extends JavaPlugin {
 
     public void reloadImportedContent(CommandSender commandSender) {
         if (!isEnabled() || MagmaCore.isShutdownRequested(this)) return;
-        if (!Bukkit.isPrimaryThread()) {
-            Bukkit.getScheduler().runTask(this, () -> reloadImportedContent(commandSender));
+        if (!PlatformScheduler.isGlobalTickThread()) {
+            PlatformScheduler.runGlobal(() -> reloadImportedContent(commandSender));
             return;
         }
         if (MagmaCore.getInitializationState(getName()) == PluginInitializationState.INITIALIZING
@@ -337,7 +338,7 @@ public final class BetterStructures extends JavaPlugin {
         Schematic.shutdown();
         NewChunkLoadEvent.prepareForContentReload();
         ChunkPregenerator.shutdown();
-        Bukkit.getServer().getScheduler().cancelTasks(MetadataHandler.PLUGIN);
+        PlatformScheduler.cancelAllTasks();
         BSPackage.shutdown();
         ModulesContainer.shutdown();
         WFCGenerator.shutdown();
@@ -356,7 +357,7 @@ public final class BetterStructures extends JavaPlugin {
                     Logger.warn("Failed to reload BetterStructures content asynchronously.");
                     failure.printStackTrace();
                     // Disabling inside the initialization callback would wait on itself.
-                    Bukkit.getScheduler().runTask(this, () -> finishImportedContentReload(false));
+                    PlatformScheduler.runGlobal(() -> finishImportedContentReload(false));
                 });
     }
 

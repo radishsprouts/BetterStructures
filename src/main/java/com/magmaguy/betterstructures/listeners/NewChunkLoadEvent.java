@@ -13,10 +13,11 @@ import com.magmaguy.betterstructures.config.ValidWorldsConfig;
 import com.magmaguy.betterstructures.config.generators.GeneratorConfigFields;
 import com.magmaguy.betterstructures.config.modulegenerators.ModuleGeneratorsConfig;
 import com.magmaguy.betterstructures.config.modulegenerators.ModuleGeneratorsConfigFields;
-import com.magmaguy.betterstructures.modules.WFCGenerator;
 import com.magmaguy.betterstructures.modules.NaturalDungeonReservation;
+import com.magmaguy.betterstructures.modules.WFCGenerator;
 import com.magmaguy.betterstructures.schematics.SchematicContainer;
 import com.magmaguy.betterstructures.thirdparty.WorldGuard;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.magmacore.util.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
@@ -26,29 +27,22 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.world.ChunkLoadEvent;
-import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.scheduler.BukkitTask;
 
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Random;
-import java.util.Set;
-import java.util.UUID;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
 
 public class NewChunkLoadEvent implements Listener {
 
-    private static final Set<LoadingChunkKey> loadingChunks = new HashSet<>();
+    private static final Set<LoadingChunkKey> loadingChunks = ConcurrentHashMap.newKeySet();
     // A content reload temporarily owns and rebuilds every registry read by a
     // chunk scan. Keep only stable coordinates for new chunks observed during
     // that window; retaining Chunk/World objects would pin unloaded worlds.
-    private static final Set<LoadingChunkKey> deferredNewChunks = new LinkedHashSet<>();
+    private static final Set<LoadingChunkKey> deferredNewChunks = Collections.synchronizedSet(new LinkedHashSet<>());
     private static final int MAX_DEFERRED_SCANS_PER_DRAIN = 32;
     private static final long MAX_DEFERRED_SCAN_NANOS = 5_000_000L;
-    private static BukkitTask deferredDrainTask;
+    private static PlatformScheduler.TaskHandle deferredDrainTask;
     private static int remainingNewInspections;
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -89,15 +83,9 @@ public class NewChunkLoadEvent implements Listener {
      */
     private static boolean claimNewChunk(Chunk chunk, LoadingChunkKey loadingChunkKey) {
         if (!ValidWorldsConfig.isValidWorld(chunk.getWorld())) return false;
-        if (loadingChunks.contains(loadingChunkKey)) return false;
-        //In some cases the same chunk gets loaded (at least at an event level) several times, this prevents the plugin from doing multiple scans and placing multiple builds, enhancing performance
-        loadingChunks.add(loadingChunkKey);
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                loadingChunks.remove(loadingChunkKey);
-            }
-        }.runTaskLater(MetadataHandler.PLUGIN, 20L);
+        // In some cases the same chunk gets loaded (at least at an event level) several times, this prevents the plugin from doing multiple scans and placing multiple builds, enhancing performance
+        if (!loadingChunks.add(loadingChunkKey)) return false;
+        PlatformScheduler.runGlobalLater(() -> loadingChunks.remove(loadingChunkKey), 20L);
 
         dungeonScanner(chunk.getWorld(), chunk.getX(), chunk.getZ());
         return isSurfacePosition(chunk) || isShallowUndergroundPosition(chunk) || isDeepUndergroundPosition(chunk)
@@ -140,8 +128,7 @@ public class NewChunkLoadEvent implements Listener {
                 || deferredDrainTask != null || MetadataHandler.PLUGIN == null
                 || !MetadataHandler.PLUGIN.isEnabled()) return;
 
-        deferredDrainTask = Bukkit.getScheduler().runTaskLater(
-                MetadataHandler.PLUGIN,
+        deferredDrainTask = PlatformScheduler.runGlobalLater(
                 () -> {
                     deferredDrainTask = null;
                     drainDeferredNewChunks();
@@ -158,9 +145,13 @@ public class NewChunkLoadEvent implements Listener {
         while (remainingNewInspections > 0 && !deferredNewChunks.isEmpty()
                 && scanned < MAX_DEFERRED_SCANS_PER_DRAIN
                 && System.nanoTime() - started < MAX_DEFERRED_SCAN_NANOS) {
-            var iterator = deferredNewChunks.iterator();
-            LoadingChunkKey key = iterator.next();
-            iterator.remove();
+            LoadingChunkKey key;
+            synchronized (deferredNewChunks) {
+                var iterator = deferredNewChunks.iterator();
+                if (!iterator.hasNext()) break;
+                key = iterator.next();
+                iterator.remove();
+            }
             remainingNewInspections--;
             World world = Bukkit.getWorld(key.worldId());
             if (world == null || !world.isChunkLoaded(key.x(), key.z())) {

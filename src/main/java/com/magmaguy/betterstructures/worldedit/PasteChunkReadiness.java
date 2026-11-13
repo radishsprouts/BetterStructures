@@ -1,6 +1,7 @@
 package com.magmaguy.betterstructures.worldedit;
 
 import com.magmaguy.betterstructures.MetadataHandler;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.betterstructures.util.PluginChunkHolds;
 import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
@@ -78,7 +79,7 @@ public final class PasteChunkReadiness implements AutoCloseable {
             // the load itself cannot honor a time budget on that platform.
             CompletableFuture<Chunk> spigotRequest = new CompletableFuture<>();
             request = spigotRequest;
-            Bukkit.getScheduler().runTask(MetadataHandler.PLUGIN, () -> {
+            PlatformScheduler.runRegion(world, x, z, () -> {
                 if (closed || Bukkit.getWorld(world.getUID()) != world) { spigotRequest.cancel(false); return; }
                 try { spigotRequest.complete(world.getChunkAt(x, z)); }
                 catch (Throwable failure) { spigotRequest.completeExceptionally(failure); }

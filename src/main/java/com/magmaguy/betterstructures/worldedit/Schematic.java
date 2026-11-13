@@ -2,6 +2,7 @@ package com.magmaguy.betterstructures.worldedit;
 
 import com.magmaguy.betterstructures.MetadataHandler;
 import com.magmaguy.betterstructures.config.DefaultConfig;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.betterstructures.util.WorldEditUtils;
 import com.magmaguy.magmacore.util.Logger;
 import com.sk89q.worldedit.EditSession;
@@ -25,8 +26,6 @@ import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.TileState;
 import org.bukkit.block.data.BlockData;
-import org.bukkit.scheduler.BukkitRunnable;
-import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Vector;
 
 import java.io.File;
@@ -40,8 +39,8 @@ public class Schematic {
     // Queue to hold pending paste operations
     private static final Queue<PasteOperation> pasteQueue = new ConcurrentLinkedQueue<>();
     private static boolean erroredOnce = false;
-    private static boolean isDistributedPasting = false;
-    private static BukkitTask activePasteTask = null;
+    private static volatile boolean isDistributedPasting = false;
+    private static PlatformScheduler.TaskHandle activePasteTask = null;
     private static PasteOperation activePasteOperation = null;
 
     // Paste operations run on the server thread. Classify each destination material once.
@@ -245,7 +244,7 @@ public class Schematic {
         startQueueIfIdle();
     }
 
-    private static void startQueueIfIdle() {
+    private static synchronized void startQueueIfIdle() {
         if (!isDistributedPasting) processNextPaste();
     }
 
@@ -257,7 +256,7 @@ public class Schematic {
     /**
      * Processes the next paste operation in the queue
      */
-    private static void processNextPaste() {
+    private static synchronized void processNextPaste() {
         long maxNanosPerTick = maxNanosPerTick(DefaultConfig.getPercentageOfTickUsedForPasting());
 
         RuntimeException firstFailure = null;
@@ -272,12 +271,12 @@ public class Schematic {
 
             isDistributedPasting = true;
             try {
-                activePasteTask = new BukkitRunnable() {
+                PasteOperation operation = activePasteOperation;
+                Runnable task = new Runnable() {
                     @Override
                     public void run() {
-                        PasteOperation operation = activePasteOperation;
-                        if (operation == null) {
-                            cancel();
+                        if (activePasteOperation == null) {
+                            if (activePasteTask != null) activePasteTask.cancel();
                             return;
                         }
 
@@ -293,18 +292,25 @@ public class Schematic {
 
                             if (!operation.hasNext()) {
                                 completeActivePaste(operation);
-                                cancel();
+                                if (activePasteTask != null) activePasteTask.cancel();
                                 processNextPaste();
                             }
                         } catch (Throwable throwable) {
                             Logger.warn("Failed while pasting a BetterStructures schematic: " + throwable.getMessage());
                             throwable.printStackTrace();
                             abortActivePaste();
-                            cancel();
+                            if (activePasteTask != null) activePasteTask.cancel();
                             processNextPaste();
                         }
                     }
-                }.runTaskTimer(MetadataHandler.PLUGIN, 0L, 1L);
+                };
+
+                Location loc = operation.getLocation();
+                if (loc != null && loc.getWorld() != null) {
+                    activePasteTask = PlatformScheduler.runRegionTimer(loc, task, 1L, 1L);
+                } else {
+                    activePasteTask = PlatformScheduler.runGlobalTimer(task, 1L, 1L);
+                }
                 break;
             } catch (RuntimeException exception) {
                 abortActivePaste();
@@ -326,8 +332,12 @@ public class Schematic {
     }
 
     private static void pasteBlock(PasteBlock pasteBlock) {
+        Block destination = pasteBlock.block();
+        if (PlatformScheduler.isFolia() && !PlatformScheduler.isOwnedByCurrentRegion(destination.getLocation())) {
+            PlatformScheduler.runRegion(destination.getLocation(), () -> pasteBlock(pasteBlock));
+            return;
+        }
         if (pasteBlock.blockData() != null) {
-            Block destination = pasteBlock.block();
             if (BLOCK_ENTITY_MATERIALS.computeIfAbsent(destination.getType(),
                     material -> material.createBlockData().createBlockState() instanceof TileState)) {
                 // Materialize pending saved NBT before changing its block type. Otherwise
@@ -396,6 +406,8 @@ public class Schematic {
         void pasteNext();
 
         void onComplete();
+
+        default Location getLocation() { return null; }
     }
 
     private static final class ClipboardPasteOperation implements PasteOperation {
@@ -422,6 +434,11 @@ public class Schematic {
                     clipboard.getDimensions().z());
             this.onComplete = onComplete;
             this.chunks = new PasteChunkReadiness(adjustedLocation.getWorld());
+        }
+
+        @Override
+        public Location getLocation() {
+            return adjustedLocation;
         }
 
         @Override

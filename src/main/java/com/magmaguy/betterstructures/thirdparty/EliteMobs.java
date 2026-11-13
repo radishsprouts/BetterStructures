@@ -1,6 +1,7 @@
 package com.magmaguy.betterstructures.thirdparty;
 
 import com.magmaguy.betterstructures.MetadataHandler;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.elitemobs.commands.ReloadCommand;
 import com.magmaguy.elitemobs.dungeons.EliteMobsWorld;
 import com.magmaguy.elitemobs.mobconstructor.custombosses.RegionalBossEntity;
@@ -51,7 +52,7 @@ public class EliteMobs {
      */
     public static void reloadAfterContentImport() {
         if (Bukkit.getPluginManager().getPlugin("EliteMobs") == null) return;
-        Bukkit.getScheduler().runTask(MetadataHandler.PLUGIN, () -> {
+        PlatformScheduler.runGlobal(() -> {
             if (!Bukkit.getPluginManager().isPluginEnabled("EliteMobs")) return;
             Logger.info("EliteMobs content was imported - reloading EliteMobs so the new content registers.");
             ReloadCommand.reload(Bukkit.getConsoleSender());

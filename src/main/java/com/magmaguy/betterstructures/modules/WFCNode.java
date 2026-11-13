@@ -1,6 +1,7 @@
 package com.magmaguy.betterstructures.modules;
 
 import com.magmaguy.betterstructures.MetadataHandler;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.magmacore.util.Logger;
 import lombok.Getter;
 import org.bukkit.*;
@@ -8,7 +9,6 @@ import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.TextDisplay;
-import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.util.Transformation;
 import org.bukkit.util.Vector;
 import org.joml.AxisAngle4f;
@@ -149,30 +149,26 @@ public class WFCNode {
      */
     public void showDebugTextDisplays() {
         if (!wfcGenerator.getModuleGeneratorsConfigFields().isDebug()) return;
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                if (textDisplays != null && !textDisplays.isEmpty())        clearDebugDisplays();
-                textDisplays = new ArrayList<>();
+        Location centerLocation = getRealCenterLocation();
+        PlatformScheduler.runRegion(centerLocation, () -> {
+            if (textDisplays != null && !textDisplays.isEmpty()) clearDebugDisplays();
+            textDisplays = new ArrayList<>();
 
-                if (modulesContainer == null) {
-                    if (possibleStates == null) {
-                        spawnDebugText(getRealCenterLocation(), "Uninitialized", Color.RED, 1);
-                        return;
-                    } else {
-                        spawnDebugText(getRealCenterLocation(), "Uninitialized", Color.GREEN, 1);
-                        spawnDebugText(getRealCenterLocation(), "Options count: " + possibleStates.size(), Color.GREEN, 1);
-                        return;
-                    }
+            if (modulesContainer == null) {
+                if (possibleStates == null) {
+                    spawnDebugText(centerLocation, "Uninitialized", Color.RED, 1);
+                    return;
+                } else {
+                    spawnDebugText(centerLocation, "Uninitialized", Color.GREEN, 1);
+                    spawnDebugText(centerLocation, "Options count: " + possibleStates.size(), Color.GREEN, 1);
+                    return;
                 }
-
-                Color color = generateRandomColor();
-                Location centerLocation = getRealCenterLocation();
-
-                displayMainInfo(centerLocation, color);
-                displayBorderInfo(centerLocation, color);
             }
-        }.runTask(MetadataHandler.PLUGIN);
+
+            Color color = generateRandomColor();
+            displayMainInfo(centerLocation, color);
+            displayBorderInfo(centerLocation, color);
+        });
     }
 
     private Color generateRandomColor() {
@@ -229,15 +225,12 @@ public class WFCNode {
     }
 
     private void spawnDebugText(Location location, String text, Color color, float scale) {
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                Location adjustedLocation = location.clone().subtract(new Vector(0,textDisplays.size()/2d,0));
-                TextDisplay textDisplay = (TextDisplay) world.spawnEntity(adjustedLocation, EntityType.TEXT_DISPLAY);
-                configureTextDisplay(textDisplay, text, color, scale);
-                textDisplays.add(textDisplay);
-            }
-        }.runTask(MetadataHandler.PLUGIN);
+        PlatformScheduler.runRegion(location, () -> {
+            Location adjustedLocation = location.clone().subtract(new Vector(0, textDisplays.size() / 2d, 0));
+            TextDisplay textDisplay = (TextDisplay) world.spawnEntity(adjustedLocation, EntityType.TEXT_DISPLAY);
+            configureTextDisplay(textDisplay, text, color, scale);
+            textDisplays.add(textDisplay);
+        });
     }
 
     private void configureTextDisplay(TextDisplay display, String text, Color color, float scale) {
@@ -314,20 +307,16 @@ public class WFCNode {
     }
 
     public void debugPaste(Material material) {
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                showDebugTextDisplays();
+        Location startLocation = getRealLocation(wfcGenerator.getStartLocation());
+        PlatformScheduler.runRegion(startLocation, () -> {
+            showDebugTextDisplays();
 
-                Location startLocation = getRealLocation(wfcGenerator.getStartLocation());
-
-                if (modulesContainer == null || modulesContainer.isNothing()) {
-                    placeMaterial(startLocation, material);
-                    return;
-                }
-
-                ModulePasting.paste(modulesContainer.getClipboard(), startLocation, modulesContainer.getRotation());
+            if (modulesContainer == null || modulesContainer.isNothing()) {
+                placeMaterial(startLocation, material);
+                return;
             }
-        }.runTask(MetadataHandler.PLUGIN);
+
+            ModulePasting.paste(modulesContainer.getClipboard(), startLocation, modulesContainer.getRotation());
+        });
     }
 }
