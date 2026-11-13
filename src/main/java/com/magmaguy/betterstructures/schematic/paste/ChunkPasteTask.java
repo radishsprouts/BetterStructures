@@ -215,8 +215,6 @@ public final class ChunkPasteTask implements Runnable {
             lines.add(sign.getFrontLine(i).trim());
         }
 
-        Logger.info("[ChunkPasteTask] Processing marker sign at (" + bx + "," + by + "," + bz + "): lines=" + lines);
-
         for (int i = 0; i < lines.size(); i++) {
             String line = lines.get(i);
             String lower = line.toLowerCase(Locale.ROOT);
@@ -234,7 +232,7 @@ public final class ChunkPasteTask implements Runnable {
                 if (entityName != null) {
                     spawnVanillaMob(loc, entityName);
                 } else {
-                    Logger.warn("[ChunkPasteTask] [spawn] sign at (" + bx + "," + by + "," + bz + ") has no entity type specified!");
+                    Logger.warn("[spawn] sign at (" + bx + "," + by + "," + bz + ") has no entity type specified!");
                 }
                 return;
             }
@@ -245,7 +243,7 @@ public final class ChunkPasteTask implements Runnable {
                 if (poolName != null) {
                     spawnPoolMob(loc, poolName);
                 } else {
-                    Logger.warn("[ChunkPasteTask] Could not extract pool name from: " + line);
+                    Logger.warn("Could not extract pool name from: " + line);
                 }
                 return;
             }
@@ -259,7 +257,6 @@ public final class ChunkPasteTask implements Runnable {
                 }
                 if (bossFile.length() > 0) {
                     EliteMobs.Spawn(loc, bossFile.toString());
-                    Logger.info("[ChunkPasteTask] Spawned EliteMob " + bossFile + " at " + loc);
                 }
                 return;
             }
@@ -270,7 +267,6 @@ public final class ChunkPasteTask implements Runnable {
                 String level = (i + 2 < lines.size()) ? lines.get(i + 2).trim() : "";
                 if (!mob.isEmpty()) {
                     MythicMobs.Spawn(loc, level.isEmpty() ? mob : mob + ":" + level);
-                    Logger.info("[ChunkPasteTask] Spawned MythicMob " + mob + " at " + loc);
                 }
                 return;
             }
@@ -280,19 +276,16 @@ public final class ChunkPasteTask implements Runnable {
                 List<String> args = new ArrayList<>();
                 for (int j = i + 1; j < lines.size(); j++) args.add(lines.get(j).trim());
                 Bukkit.getPluginManager().callEvent(new BuildCustomMarkerEvent(session.getFitter(), loc, args));
-                Logger.info("[ChunkPasteTask] Dispatched custom marker at " + loc + ": " + args);
                 return;
             }
 
             // [chest] & [trapped_chest]
             if (lower.contains("[chest]")) {
                 world.getBlockAt(bx, by, bz).setType(Material.CHEST, false);
-                Logger.info("[ChunkPasteTask] Replaced sign with chest at (" + bx + "," + by + "," + bz + ")");
                 return;
             }
             if (lower.contains("[trapped_chest]")) {
                 world.getBlockAt(bx, by, bz).setType(Material.TRAPPED_CHEST, false);
-                Logger.info("[ChunkPasteTask] Replaced sign with trapped_chest at (" + bx + "," + by + "," + bz + ")");
                 return;
             }
         }
@@ -310,7 +303,6 @@ public final class ChunkPasteTask implements Runnable {
                     living.setPersistent(true);
                     living.setNoDamageTicks(60);
                     living.setFallDistance(0);
-                    Logger.info("[ChunkPasteTask] Spawned mob " + type + " at " + loc + " with persistence guaranteed");
                 });
             } else {
                 Entity entity = world.spawnEntity(loc, type);
@@ -320,10 +312,9 @@ public final class ChunkPasteTask implements Runnable {
                     living.setNoDamageTicks(60);
                     living.setFallDistance(0);
                 }
-                Logger.info("[ChunkPasteTask] Spawned entity " + type + " at " + loc + " (fallback)");
             }
         } catch (Exception e) {
-            Logger.warn("[ChunkPasteTask] Failed to spawn entity from sign: " + entityName + " (" + e.getMessage() + ")");
+            Logger.warn("Failed to spawn entity from sign: " + entityName + " (" + e.getMessage() + ")");
         }
     }
 
@@ -331,24 +322,23 @@ public final class ChunkPasteTask implements Runnable {
         String poolFilename = poolName.endsWith(".yml") ? poolName : poolName + ".yml";
         SpawnPoolsConfigFields pool = SpawnPoolsConfig.getConfigFields(poolFilename);
         if (pool == null) {
-            Logger.warn("[ChunkPasteTask] Could not find spawn pool " + poolFilename);
+            Logger.warn("Could not find spawn pool " + poolFilename);
             return;
         }
         String bossFilename = SpawnPoolsConfig.pickBossFilename(pool);
         if (bossFilename == null) {
-            Logger.warn("[ChunkPasteTask] Spawn pool " + poolFilename + " has no entries");
+            Logger.warn("Spawn pool " + poolFilename + " has no entries");
             return;
         }
         if (Bukkit.getPluginManager().isPluginEnabled("EliteMobs")) {
             EliteMobs.Spawn(loc, bossFilename);
-            Logger.info("[ChunkPasteTask] Spawned EliteMob boss from pool: " + bossFilename + " at " + loc);
         } else {
             String cleanName = bossFilename.replace(".yml", "").toUpperCase(Locale.ROOT);
             try {
                 EntityType type = EntityType.valueOf(cleanName);
                 spawnVanillaMob(loc, type.name());
             } catch (Exception ignored) {
-                Logger.warn("[ChunkPasteTask] EliteMobs not enabled for boss " + bossFilename + " from pool " + poolFilename);
+                Logger.warn("EliteMobs not enabled for boss " + bossFilename + " from pool " + poolFilename);
             }
         }
     }
@@ -375,7 +365,6 @@ public final class ChunkPasteTask implements Runnable {
         }
 
         sign.update(true, false);
-        Logger.info("[ChunkPasteTask] Restored sign at (" + block.getX() + "," + block.getY() + "," + block.getZ() + "): front[0]='" + signData.getFrontLine(0) + "', front[1]='" + signData.getFrontLine(1) + "'");
     }
 
     private void fillContainer(Container container, StructureBlockEntry entry) {
@@ -397,14 +386,7 @@ public final class ChunkPasteTask implements Runnable {
         if (EntityNbtApplier.isPropModel(entry.entity().nbt())) {
             String propName = EntityNbtApplier.getPropModelName(entry.entity().nbt());
             if (BetterModelBridge.isEnabled() && propName != null) {
-                boolean spawned = BetterModelBridge.spawnProp(loc, propName);
-                if (spawned) {
-                    Logger.info("[ChunkPasteTask] Spawned BetterModel prop: " + propName + " at " + loc);
-                } else {
-                    Logger.warn("[ChunkPasteTask] BetterModel prop not found in models: " + propName + " at " + loc);
-                }
-            } else if (!Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
-                Logger.info("[ChunkPasteTask] Skipped prop ArmorStand spawn (FreeMinecraftModels not active): " + propName + " at (" + entry.worldX() + "," + entry.worldY() + "," + entry.worldZ() + ")");
+                BetterModelBridge.spawnProp(loc, propName);
             }
             // If FreeMinecraftModels is not installed, never spawn the vanilla ArmorStand to prevent collisions
             if (!Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
@@ -429,20 +411,17 @@ public final class ChunkPasteTask implements Runnable {
             if (entityClass != null) {
                 world.spawn(loc, entityClass, entity -> {
                     EntityNbtApplier.applyNbt(entity, entry.entity().nbt());
-                    Logger.info("[ChunkPasteTask] Spawned entity " + entityType + " at " + loc + " with NBT applied");
                 });
             } else {
                 Entity entity = world.spawnEntity(loc, entityType);
                 EntityNbtApplier.applyNbt(entity, entry.entity().nbt());
-                Logger.info("[ChunkPasteTask] Spawned entity " + entityType + " at " + loc + " with NBT applied (fallback)");
             }
         } catch (Exception e) {
             try {
                 Entity entity = world.spawnEntity(loc, entityType);
                 EntityNbtApplier.applyNbt(entity, entry.entity().nbt());
-                Logger.info("[ChunkPasteTask] Spawned entity " + entityType + " at " + loc + " with NBT applied (catch fallback)");
             } catch (Exception ex) {
-                Logger.warn("[ChunkPasteTask] Failed to spawn entity " + rawId + " at " + loc + ": " + ex.getMessage());
+                Logger.warn("Failed to spawn entity " + rawId + " at " + loc + ": " + ex.getMessage());
             }
         }
     }

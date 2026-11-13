@@ -638,14 +638,7 @@ public final class ModulePasting {
         if (EntityNbtApplier.isPropModel(se.nbt())) {
             String propName = EntityNbtApplier.getPropModelName(se.nbt());
             if (BetterModelBridge.isEnabled() && propName != null) {
-                boolean spawned = BetterModelBridge.spawnProp(ep.location(), propName);
-                if (spawned) {
-                    Logger.info("[ModulePasting] Spawned BetterModel prop: " + propName + " at " + ep.location());
-                } else {
-                    Logger.warn("[ModulePasting] BetterModel prop not found in models: " + propName + " at " + ep.location());
-                }
-            } else if (!Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
-                Logger.info("[ModulePasting] Skipped prop ArmorStand spawn (FreeMinecraftModels not active): " + propName + " at " + ep.location());
+                BetterModelBridge.spawnProp(ep.location(), propName);
             }
             if (!Bukkit.getPluginManager().isPluginEnabled("FreeMinecraftModels")) {
                 return;

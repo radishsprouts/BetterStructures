@@ -104,25 +104,18 @@ public final class EntityNbtApplier {
 
             if (valTag instanceof SimpleNbt.StringTag stringTag) {
                 pdc.set(namespacedKey, PersistentDataType.STRING, stringTag.asString());
-                Logger.info("[EntityNbtApplier] Set PDC (String) " + namespacedKey + " = " + stringTag.asString() + " on " + entity.getType());
             } else if (valTag instanceof SimpleNbt.ByteTag byteTag) {
                 pdc.set(namespacedKey, PersistentDataType.BYTE, byteTag.asByte());
-                Logger.info("[EntityNbtApplier] Set PDC (Byte) " + namespacedKey + " = " + byteTag.asByte() + " on " + entity.getType());
             } else if (valTag instanceof SimpleNbt.IntTag intTag) {
                 pdc.set(namespacedKey, PersistentDataType.INTEGER, intTag.asInt());
-                Logger.info("[EntityNbtApplier] Set PDC (Int) " + namespacedKey + " = " + intTag.asInt() + " on " + entity.getType());
             } else if (valTag instanceof SimpleNbt.LongTag longTag) {
                 pdc.set(namespacedKey, PersistentDataType.LONG, longTag.asLong());
-                Logger.info("[EntityNbtApplier] Set PDC (Long) " + namespacedKey + " = " + longTag.asLong() + " on " + entity.getType());
             } else if (valTag instanceof SimpleNbt.DoubleTag doubleTag) {
                 pdc.set(namespacedKey, PersistentDataType.DOUBLE, doubleTag.asDouble());
-                Logger.info("[EntityNbtApplier] Set PDC (Double) " + namespacedKey + " = " + doubleTag.asDouble() + " on " + entity.getType());
             } else if (valTag instanceof SimpleNbt.FloatTag floatTag) {
                 pdc.set(namespacedKey, PersistentDataType.FLOAT, floatTag.asFloat());
-                Logger.info("[EntityNbtApplier] Set PDC (Float) " + namespacedKey + " = " + floatTag.asFloat() + " on " + entity.getType());
             } else {
                 pdc.set(namespacedKey, PersistentDataType.STRING, valTag.getValue().toString());
-                Logger.info("[EntityNbtApplier] Set PDC (Fallback) " + namespacedKey + " = " + valTag.getValue() + " on " + entity.getType());
             }
         }
     }
@@ -239,10 +232,7 @@ public final class EntityNbtApplier {
             armorStand.setVisible(false);
             armorStand.setMarker(true);
             armorStand.setBasePlate(false);
-            Logger.info("[EntityNbtApplier] Prop ArmorStand hidden (FreeMinecraftModels not active): " + armorStand.getLocation());
         }
-
-        Logger.info("[EntityNbtApplier] ArmorStand attrs: invisible=" + invisible + ", small=" + small + ", arms=" + arms + ", noBasePlate=" + noBasePlate + ", marker=" + marker + ", isProp=" + isPropModel);
 
         // Pose
         SimpleNbt.CompoundTag pose = tag.getCompound("Pose");

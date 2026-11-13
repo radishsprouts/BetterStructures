@@ -1,6 +1,5 @@
 package com.magmaguy.betterstructures.thirdparty;
 
-import com.magmaguy.magmacore.util.Logger;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.jetbrains.annotations.NotNull;
@@ -55,10 +54,8 @@ public final class BetterModelBridge {
             createMethod = modelRendererClass.getMethod("create", platformLocationClass);
 
             available = true;
-            Logger.info("[BetterModelBridge] BetterModel reflection bridge initialized successfully.");
         } catch (Throwable t) {
             available = false;
-            Logger.warn("[BetterModelBridge] Failed to initialize BetterModel bridge: " + t.getMessage());
         }
     }
 
@@ -89,7 +86,6 @@ public final class BetterModelBridge {
             createMethod.invoke(renderer, platformLoc);
             return true;
         } catch (Throwable t) {
-            Logger.warn("[BetterModelBridge] Failed to spawn BetterModel prop '" + modelName + "': " + t.getMessage());
             return false;
         }
     }
