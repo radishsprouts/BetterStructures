@@ -155,7 +155,7 @@ public final class StructureSchematic {
                     try {
                         entityType = EntityType.valueOf(entityName);
                     } catch (IllegalArgumentException ex) {
-                        entityType = entityName.equalsIgnoreCase("WITHER_CRYSTAL") ? EntityType.END_CRYSTAL : null;
+                        entityType = (entityName.equalsIgnoreCase("WITHER_CRYSTAL") || entityName.equalsIgnoreCase("ENDER_CRYSTAL")) ? EntityType.END_CRYSTAL : null;
                     }
                     if (entityType != null) {
                         vanillaSpawns.put(pos, entityType);

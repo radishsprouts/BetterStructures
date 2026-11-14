@@ -175,7 +175,7 @@ public class SchematicContainer {
                                 try {
                                     entityType = EntityType.valueOf(line2);
                                 } catch (Exception ex) {
-                                    if (line2.equalsIgnoreCase("WITHER_CRYSTAL"))
+                                    if (line2.equalsIgnoreCase("WITHER_CRYSTAL") || line2.equalsIgnoreCase("ENDER_CRYSTAL"))
                                         entityType = EntityType.END_CRYSTAL;
                                     else {
                                         Logger.warn("Failed to determine entity type for sign! Entry was " + line2 + " in schematic " + clipboardFilename + " ! Fix this by inputting a valid entity type!");

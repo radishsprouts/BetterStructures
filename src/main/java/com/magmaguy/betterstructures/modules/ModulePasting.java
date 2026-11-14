@@ -418,13 +418,24 @@ public final class ModulePasting {
                         int wz = baseZ + z;
                         long chunkKey = Chunk.getChunkKey(wx >> 4, wz >> 4);
 
+                        boolean isStandingSign = block.isSign() && !mat.name().contains("WALL");
                         if (block.isSign()) {
-                            chunkSigns.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                                    .add(new NativeSignPlacement(new Location(world, wx, wy, wz), block.parsedSign(), config));
                             SignTextParser.ParsedSign parsed = block.parsedSign();
                             if (parsed != null && isNativeMarkerSign(parsed)) {
+                                chunkBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                        .add(new NativeBlockPlacement(wx, wy, wz, Material.AIR.createBlockData()));
+                                chunkSigns.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                        .add(new NativeSignPlacement(new Location(world, wx, wy, wz), parsed, config));
                                 continue;
                             }
+                            if (isStandingSign && parsed != null && !parsed.hasText()) {
+                                // Empty standing sign rule (Plan A): forgotten marker, clear to AIR
+                                chunkBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                        .add(new NativeBlockPlacement(wx, wy, wz, Material.AIR.createBlockData()));
+                                continue;
+                            }
+                            chunkSigns.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                    .add(new NativeSignPlacement(new Location(world, wx, wy, wz), parsed, config));
                         }
 
                         if (mat == Material.CHEST || mat == Material.TRAPPED_CHEST || mat == Material.BARREL) {
@@ -546,14 +557,14 @@ public final class ModulePasting {
 
     private boolean isNativeMarkerSign(SignTextParser.ParsedSign sign) {
         if (sign == null) return false;
-        String line1 = sign.getFrontLine(0).toLowerCase(Locale.ROOT);
-        if (line1.contains("[spawn]") || line1.contains("[elitemobs]") || line1.contains("[pool:")
-                || line1.contains("[mythicmobs]") || line1.contains("[custom]")) {
-            return true;
-        }
         for (int i = 0; i < 4; i++) {
-            String line = sign.getFrontLine(i).toLowerCase(Locale.ROOT);
-            if (line.contains("[chest]") || line.contains("[trapped_chest]")) return true;
+            String line = sign.getFrontLine(i).toLowerCase(Locale.ROOT).trim();
+            if (line.contains("[spawn]") || line.contains("[elitemobs]")
+                    || line.contains("[pool:") || line.contains("[mythicmobs]")
+                    || line.contains("[custom]") || line.contains("[chest]")
+                    || line.contains("[trapped_chest]")) {
+                return true;
+            }
         }
         return false;
     }
@@ -563,6 +574,26 @@ public final class ModulePasting {
         SignTextParser.ParsedSign sign = sp.sign();
         if (sign == null) return;
 
+        Block block = world.getBlockAt(loc);
+
+        // Empty standing sign rule (Plan A): forgotten marker, clear to AIR
+        if (!sign.hasText() && !block.getType().name().contains("WALL")) {
+            block.setType(Material.AIR, false);
+            return;
+        }
+
+        if (!isNativeMarkerSign(sign)) {
+            restoreNormalSign(block, sign);
+            return;
+        }
+
+        // Marker sign: ensure marker sign block itself is turned into AIR
+        block.setType(Material.AIR, false);
+        Block headBlock = world.getBlockAt(loc.getBlockX(), loc.getBlockY() + 1, loc.getBlockZ());
+        if (headBlock.getType().isSolid()) {
+            headBlock.setType(Material.AIR, false);
+        }
+
         List<String> rawLines = new ArrayList<>();
         for (int i = 0; i < 4; i++) rawLines.add(sign.getFrontLine(i));
 
@@ -571,39 +602,73 @@ public final class ModulePasting {
             if (line != null && !line.isBlank() && line.contains("[pool:")) {
                 lines.add(line.replace("]", spawnPoolSuffix + "]"));
             } else {
-                lines.add(line);
+                lines.add(line != null ? line : "");
             }
         }
 
         InterpretedSign interpretedSign = new InterpretedSign(loc, lines);
         interpretedSigns.add(interpretedSign);
 
-        String line1 = lines.get(0).toLowerCase(Locale.ROOT);
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            String lower = line.toLowerCase(Locale.ROOT);
 
-        if (line1.contains("[spawn]") && lines.size() > 1) {
-            try {
-                EntityType entityType = EntityType.valueOf(lines.get(1).toUpperCase(Locale.ROOT).trim());
-                Entity entity = world.spawnEntity(entitySpawnLocation(loc), entityType);
-                entity.setPersistent(true);
-                if (entity instanceof LivingEntity living) living.setRemoveWhenFarAway(false);
-            } catch (Exception e) {
-                Logger.warn("Invalid entity type in sign: " + lines.get(1));
+            // [spawn] Vanilla Mob
+            if (lower.contains("[spawn]")) {
+                String entityName = null;
+                for (int j = i + 1; j < lines.size(); j++) {
+                    String candidate = lines.get(j).replace("\"", "").trim();
+                    if (!candidate.isEmpty()) {
+                        entityName = candidate.toUpperCase(Locale.ROOT);
+                        break;
+                    }
+                }
+                if (entityName != null) {
+                    if (entityName.equals("WITHER_CRYSTAL") || entityName.equals("ENDER_CRYSTAL")) {
+                        entityName = "END_CRYSTAL";
+                    }
+                    try {
+                        EntityType entityType = EntityType.valueOf(entityName);
+                        Location spawnLoc = entitySpawnLocation(loc);
+                        Class<? extends Entity> entityClass = entityType.getEntityClass();
+                        if (entityClass != null && LivingEntity.class.isAssignableFrom(entityClass)) {
+                            @SuppressWarnings("unchecked")
+                            Class<? extends LivingEntity> livingClass = (Class<? extends LivingEntity>) entityClass;
+                            world.spawn(spawnLoc, livingClass, living -> {
+                                living.setRemoveWhenFarAway(false);
+                                living.setPersistent(true);
+                                living.setNoDamageTicks(60);
+                                living.setFallDistance(0);
+                            });
+                        } else {
+                            Entity entity = world.spawnEntity(spawnLoc, entityType);
+                            entity.setPersistent(true);
+                            if (entity instanceof LivingEntity living) {
+                                living.setRemoveWhenFarAway(false);
+                                living.setNoDamageTicks(60);
+                                living.setFallDistance(0);
+                            }
+                        }
+                    } catch (Exception e) {
+                        Logger.warn("Invalid entity type in sign: " + entityName + " (" + e.getMessage() + ")");
+                    }
+                }
+                return;
             }
-            return;
-        }
 
-        if (line1.contains("[chest]")) {
-            Block b = world.getBlockAt(loc);
-            b.setType(Material.CHEST, false);
-            if (b.getState() instanceof Container container) fill(container, moduleGeneratorsConfigFields.getTreasureFile());
-            return;
-        }
+            // [chest]
+            if (lower.contains("[chest]")) {
+                block.setType(Material.CHEST, false);
+                if (block.getState() instanceof Container container) fill(container, moduleGeneratorsConfigFields.getTreasureFile());
+                return;
+            }
 
-        if (line1.contains("[trapped_chest]")) {
-            Block b = world.getBlockAt(loc);
-            b.setType(Material.TRAPPED_CHEST, false);
-            if (b.getState() instanceof Container container) fill(container, moduleGeneratorsConfigFields.getTreasureFile());
-            return;
+            // [trapped_chest]
+            if (lower.contains("[trapped_chest]")) {
+                block.setType(Material.TRAPPED_CHEST, false);
+                if (block.getState() instanceof Container container) fill(container, moduleGeneratorsConfigFields.getTreasureFile());
+                return;
+            }
         }
 
         if (!createModularWorld) {
@@ -614,6 +679,30 @@ public final class ModulePasting {
         if (modularWorld == null) modularWorld = createWorld();
         modularWorld.addSign(interpretedSign);
         modularWorld.spawnOtherEntitiesAt(interpretedSign);
+    }
+
+    private void restoreNormalSign(Block block, SignTextParser.ParsedSign signData) {
+        if (!(block.getState() instanceof Sign sign)) return;
+
+        SignSide front = sign.getSide(Side.FRONT);
+        for (int i = 0; i < 4; i++) {
+            front.setLine(i, signData.getFrontLine(i));
+        }
+        front.setColor(signData.frontColor());
+        front.setGlowingText(signData.frontGlowing());
+
+        SignSide back = sign.getSide(Side.BACK);
+        for (int i = 0; i < 4; i++) {
+            back.setLine(i, signData.getBackLine(i));
+        }
+        back.setColor(signData.backColor());
+        back.setGlowingText(signData.backGlowing());
+
+        if (signData.isWaxed()) {
+            sign.setWaxed(true);
+        }
+
+        sign.update(true, false);
     }
 
     private void processNativeContainer(NativeContainerPlacement cp) {

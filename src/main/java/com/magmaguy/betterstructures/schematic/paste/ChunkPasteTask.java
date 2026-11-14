@@ -144,9 +144,17 @@ public final class ChunkPasteTask implements Runnable {
         }
 
         // Special marker sign rule: marker signs turn into AIR, then spawn their target
-        if (entry.block().isSign() && isMarkerSign(entry.block().parsedSign())) {
-            destination.setType(Material.AIR, false);
-            return;
+        if (entry.block().isSign()) {
+            if (isMarkerSign(entry.block().parsedSign())) {
+                destination.setType(Material.AIR, false);
+                return;
+            }
+            // Empty standing sign rule (Plan A): standing signs without any text are forgotten markers, clear to AIR
+            if (entry.block().parsedSign() != null && !entry.block().parsedSign().hasText()
+                    && !newMaterial.name().contains("WALL")) {
+                destination.setType(Material.AIR, false);
+                return;
+            }
         }
 
         // Normal block placement without physics
@@ -163,6 +171,8 @@ public final class ChunkPasteTask implements Runnable {
                 SignTextParser.ParsedSign sign = structBlock.parsedSign();
                 if (isMarkerSign(sign)) {
                     handleMarkerSign(entry, sign);
+                } else if (sign != null && !sign.hasText() && !structBlock.blockData().getMaterial().name().contains("WALL")) {
+                    destination.setType(Material.AIR, false);
                 } else {
                     restoreNormalSign(destination, sign);
                 }
@@ -293,7 +303,11 @@ public final class ChunkPasteTask implements Runnable {
 
     private void spawnVanillaMob(Location loc, String entityName) {
         try {
-            EntityType type = EntityType.valueOf(entityName.equalsIgnoreCase("WITHER_CRYSTAL") ? "END_CRYSTAL" : entityName);
+            String cleanName = entityName.replace("\"", "").trim().toUpperCase(Locale.ROOT);
+            if (cleanName.equals("WITHER_CRYSTAL") || cleanName.equals("ENDER_CRYSTAL")) {
+                cleanName = "END_CRYSTAL";
+            }
+            EntityType type = EntityType.valueOf(cleanName);
             Class<? extends Entity> entityClass = type.getEntityClass();
             if (entityClass != null && LivingEntity.class.isAssignableFrom(entityClass)) {
                 @SuppressWarnings("unchecked")
