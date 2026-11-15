@@ -72,7 +72,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ModulePasting {
     private static final EnumSet<Material> SIGN_MATERIALS = EnumSet.noneOf(Material.class);
-    private final Map<String, ChestContents> barrelContents = new HashMap<>();
+    private final Map<String, ChestContents> barrelContents = new ConcurrentHashMap<>();
 
     static {
         //Locale.ROOT: the default-locale lowercase turns "SIGN" into "sıgn" on Turkish locales
@@ -80,7 +80,7 @@ public final class ModulePasting {
             if (m.toString().toUpperCase(Locale.ROOT).contains("SIGN")) SIGN_MATERIALS.add(m);
     }
 
-    private final List<InterpretedSign> interpretedSigns = new ArrayList<>();
+    private final List<InterpretedSign> interpretedSigns = java.util.Collections.synchronizedList(new ArrayList<>());
     private final List<ChestPlacement> chestsToPlace = new ArrayList<>();
     private final List<BarrelPlacement> barrelsToFill = new ArrayList<>();
     private final List<EntitySpawn> entitiesToSpawn = new ArrayList<>();
@@ -383,152 +383,347 @@ public final class ModulePasting {
         com.magmaguy.betterstructures.worldedit.Schematic.enqueue(new ModularPaste(inputs));
     }
 
-    private void batchPasteNative(Deque<WFCNode> nodes) {
-        Map<Long, List<NativeBlockPlacement>> chunkBlocks = new HashMap<>();
-        Map<Long, List<NativeEntityPlacement>> chunkEntities = new HashMap<>();
-        Map<Long, List<NativeSignPlacement>> chunkSigns = new HashMap<>();
-        Map<Long, List<NativeContainerPlacement>> chunkContainers = new HashMap<>();
+    private static final long MAX_MODULAR_NANOS_PER_TICK = 2_000_000L; // 2.0ms per tick budget
 
+    private record NativeNodeSnapshot(
+            StructureSchematic schematic,
+            int baseX,
+            int baseY,
+            int baseZ,
+            int rotation,
+            ModulesConfigFields config
+    ) {
+    }
+
+    private void batchPasteNative(Deque<WFCNode> nodes) {
+        // 1. Snapshot node data immediately so WFCNode references are not mutated across threads
+        List<NativeNodeSnapshot> snapshots = new ArrayList<>(nodes.size());
         while (!nodes.isEmpty()) {
             WFCNode node = nodes.poll();
+            if (node == null) continue;
             ModulesContainer module = node.getModulesContainer();
             if (module == null || module.getStructureSchematic() == null) continue;
-
             Location nodeLoc = node.getRealLocation(startLocation);
-            int rotDeg = module.getRotation();
-            StructureSchematic rotated = module.getStructureSchematic().rotate(rotDeg);
-            ModulesConfigFields config = module.getModulesConfigField();
-
-            int baseX = nodeLoc.getBlockX();
-            int baseY = nodeLoc.getBlockY();
-            int baseZ = nodeLoc.getBlockZ();
-
-            for (int y = 0; y < rotated.getHeight(); y++) {
-                for (int z = 0; z < rotated.getLength(); z++) {
-                    for (int x = 0; x < rotated.getWidth(); x++) {
-                        StructureBlock block = rotated.getBlock(x, y, z);
-                        if (block == null || block.blockData() == null) continue;
-                        Material mat = block.blockData().getMaterial();
-
-                        if (mat == Material.BARRIER) continue;
-                        if (createModularWorld && mat.isAir()) continue;
-
-                        int wx = baseX + x;
-                        int wy = baseY + y;
-                        int wz = baseZ + z;
-                        long chunkKey = Chunk.getChunkKey(wx >> 4, wz >> 4);
-
-                        boolean isStandingSign = block.isSign() && !mat.name().contains("WALL");
-                        if (block.isSign()) {
-                            SignTextParser.ParsedSign parsed = block.parsedSign();
-                            if (parsed != null && isNativeMarkerSign(parsed)) {
-                                chunkBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                                        .add(new NativeBlockPlacement(wx, wy, wz, Material.AIR.createBlockData()));
-                                chunkSigns.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                                        .add(new NativeSignPlacement(new Location(world, wx, wy, wz), parsed, config));
-                                continue;
-                            }
-                            if (isStandingSign && parsed != null && !parsed.hasText()) {
-                                // Empty standing sign rule (Plan A): forgotten marker, clear to AIR
-                                chunkBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                                        .add(new NativeBlockPlacement(wx, wy, wz, Material.AIR.createBlockData()));
-                                continue;
-                            }
-                            chunkSigns.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                                    .add(new NativeSignPlacement(new Location(world, wx, wy, wz), parsed, config));
-                        }
-
-                        if (mat == Material.CHEST || mat == Material.TRAPPED_CHEST || mat == Material.BARREL) {
-                            chunkContainers.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                                    .add(new NativeContainerPlacement(new Location(world, wx, wy, wz), mat, config));
-                        }
-
-                        chunkBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                                .add(new NativeBlockPlacement(wx, wy, wz, block.blockData()));
-                    }
-                }
-            }
-
-            for (StructureEntity entity : rotated.getEntities()) {
-                double ex = baseX + entity.x();
-                double ey = baseY + entity.y();
-                double ez = baseZ + entity.z();
-                long chunkKey = Chunk.getChunkKey(((int) Math.floor(ex)) >> 4, ((int) Math.floor(ez)) >> 4);
-                chunkEntities.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                        .add(new NativeEntityPlacement(new Location(world, ex, ey, ez), entity));
-            }
+            snapshots.add(new NativeNodeSnapshot(
+                    module.getStructureSchematic(),
+                    nodeLoc.getBlockX(),
+                    nodeLoc.getBlockY(),
+                    nodeLoc.getBlockZ(),
+                    module.getRotation(),
+                    module.getModulesConfigField()
+            ));
         }
 
-        Set<Long> allChunks = new HashSet<>();
-        allChunks.addAll(chunkBlocks.keySet());
-        allChunks.addAll(chunkEntities.keySet());
-        allChunks.addAll(chunkSigns.keySet());
-        allChunks.addAll(chunkContainers.keySet());
-
-        if (allChunks.isEmpty()) {
-            if (createModularWorld) {
-                if (modularWorld == null) modularWorld = createWorld();
-                modularWorld.generationFinished();
-            }
+        if (snapshots.isEmpty()) {
+            finishNativePaste();
             return;
         }
 
-        Set<Chunk> heldChunks = ConcurrentHashMap.newKeySet();
-        AtomicInteger remainingChunks = new AtomicInteger(allChunks.size());
+        // 2. Expand rotated schematics, group by chunk, and sort by Y ascending on an async thread
+        PlatformScheduler.runAsync(() -> {
+            try {
+                Map<Long, List<NativeBlockPlacement>> chunkBlocks = new HashMap<>();
+                Map<Long, List<NativeEntityPlacement>> chunkEntities = new HashMap<>();
+                Map<Long, List<NativeSignPlacement>> chunkSigns = new HashMap<>();
+                Map<Long, List<NativeContainerPlacement>> chunkContainers = new HashMap<>();
 
-        for (long chunkKey : allChunks) {
-            int cx = (int) chunkKey;
-            int cz = (int) (chunkKey >> 32);
+                BlockData airData = Material.AIR.createBlockData();
 
-            world.getChunkAtAsync(cx, cz, true).thenAccept(chunk -> {
-                if (chunk == null) {
-                    if (remainingChunks.decrementAndGet() == 0) finishNativePaste(heldChunks);
+                for (NativeNodeSnapshot snap : snapshots) {
+                    StructureSchematic rotated = snap.schematic().rotate(snap.rotation());
+                    ModulesConfigFields config = snap.config();
+                    int baseX = snap.baseX();
+                    int baseY = snap.baseY();
+                    int baseZ = snap.baseZ();
+
+                    for (int y = 0; y < rotated.getHeight(); y++) {
+                        for (int z = 0; z < rotated.getLength(); z++) {
+                            for (int x = 0; x < rotated.getWidth(); x++) {
+                                StructureBlock block = rotated.getBlock(x, y, z);
+                                if (block == null || block.blockData() == null) continue;
+                                Material mat = block.blockData().getMaterial();
+
+                                if (mat == Material.BARRIER) continue;
+                                if (createModularWorld && mat.isAir()) continue;
+
+                                int wx = baseX + x;
+                                int wy = baseY + y;
+                                int wz = baseZ + z;
+                                long chunkKey = Chunk.getChunkKey(wx >> 4, wz >> 4);
+
+                                boolean isStandingSign = block.isSign() && !mat.name().contains("WALL");
+                                if (block.isSign()) {
+                                    SignTextParser.ParsedSign parsed = block.parsedSign();
+                                    if (parsed != null && isNativeMarkerSign(parsed)) {
+                                        chunkBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                                .add(new NativeBlockPlacement(wx, wy, wz, airData));
+                                        chunkSigns.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                                .add(new NativeSignPlacement(new Location(world, wx, wy, wz), parsed, config));
+                                        continue;
+                                    }
+                                    if (isStandingSign && parsed != null && !parsed.hasText()) {
+                                        chunkBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                                .add(new NativeBlockPlacement(wx, wy, wz, airData));
+                                        continue;
+                                    }
+                                    chunkSigns.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                            .add(new NativeSignPlacement(new Location(world, wx, wy, wz), parsed, config));
+                                }
+
+                                if (mat == Material.CHEST || mat == Material.TRAPPED_CHEST || mat == Material.BARREL) {
+                                    chunkContainers.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                            .add(new NativeContainerPlacement(new Location(world, wx, wy, wz), mat, config));
+                                }
+
+                                chunkBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                        .add(new NativeBlockPlacement(wx, wy, wz, block.blockData()));
+                            }
+                        }
+                    }
+
+                    for (StructureEntity entity : rotated.getEntities()) {
+                        double ex = baseX + entity.x();
+                        double ey = baseY + entity.y();
+                        double ez = baseZ + entity.z();
+                        long chunkKey = Chunk.getChunkKey(((int) Math.floor(ex)) >> 4, ((int) Math.floor(ez)) >> 4);
+                        chunkEntities.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                .add(new NativeEntityPlacement(new Location(world, ex, ey, ez), entity));
+                    }
+                }
+
+                // Sort each chunk's block list by Y ascending on the async thread
+                Comparator<NativeBlockPlacement> byY = Comparator.comparingInt(NativeBlockPlacement::wy);
+                for (List<NativeBlockPlacement> blocks : chunkBlocks.values()) {
+                    blocks.sort(byY);
+                }
+
+                Set<Long> allChunks = new java.util.LinkedHashSet<>();
+                allChunks.addAll(chunkBlocks.keySet());
+                allChunks.addAll(chunkEntities.keySet());
+                allChunks.addAll(chunkSigns.keySet());
+                allChunks.addAll(chunkContainers.keySet());
+
+                if (allChunks.isEmpty()) {
+                    finishNativePaste();
                     return;
                 }
 
-                PluginChunkHolds.hold(chunk);
-                heldChunks.add(chunk);
+                java.util.concurrent.ConcurrentLinkedQueue<Long> chunkQueue =
+                        new java.util.concurrent.ConcurrentLinkedQueue<>(allChunks);
 
-                PlatformScheduler.runRegion(world, cx, cz, () -> {
-                    List<NativeBlockPlacement> blocks = chunkBlocks.getOrDefault(chunkKey, List.of());
-                    blocks.sort(Comparator.comparingInt(NativeBlockPlacement::wy));
+                processNextModularChunk(chunkQueue, chunkBlocks, chunkSigns, chunkContainers, chunkEntities);
+            } catch (Throwable t) {
+                Logger.warn("Failed to prepare modular native paste: " + t.getMessage());
+                finishNativePaste();
+            }
+        });
+    }
 
-                    for (NativeBlockPlacement bp : blocks) {
-                        Block b = world.getBlockAt(bp.wx(), bp.wy(), bp.wz());
-                        b.setBlockData(bp.data(), false);
+    private void processNextModularChunk(
+            java.util.concurrent.ConcurrentLinkedQueue<Long> chunkQueue,
+            Map<Long, List<NativeBlockPlacement>> chunkBlocks,
+            Map<Long, List<NativeSignPlacement>> chunkSigns,
+            Map<Long, List<NativeContainerPlacement>> chunkContainers,
+            Map<Long, List<NativeEntityPlacement>> chunkEntities
+    ) {
+        if (world == null || Bukkit.getWorld(world.getUID()) != world) {
+            finishNativePaste();
+            return;
+        }
+
+        Long nextKey = chunkQueue.poll();
+        if (nextKey == null) {
+            finishNativePaste();
+            return;
+        }
+
+        final long chunkKey = nextKey;
+        final int cx = (int) chunkKey;
+        final int cz = (int) (chunkKey >> 32);
+
+        final List<NativeBlockPlacement> blocks = chunkBlocks.remove(chunkKey);
+        final List<NativeSignPlacement> signs = chunkSigns.remove(chunkKey);
+        final List<NativeContainerPlacement> containers = chunkContainers.remove(chunkKey);
+        final List<NativeEntityPlacement> entities = chunkEntities.remove(chunkKey);
+
+        world.getChunkAtAsync(cx, cz, true).whenComplete((chunk, ex) -> {
+            if (ex != null || chunk == null || !chunk.isLoaded() || Bukkit.getWorld(world.getUID()) != world) {
+                if (ex != null) {
+                    Logger.warn("Failed to load chunk " + cx + ", " + cz + " for modular paste: " + ex.getMessage());
+                }
+                processNextModularChunk(chunkQueue, chunkBlocks, chunkSigns, chunkContainers, chunkEntities);
+                return;
+            }
+
+            PluginChunkHolds.hold(world, cx, cz);
+
+            ModularChunkPasteTask task = new ModularChunkPasteTask(
+                    cx, cz,
+                    blocks != null ? blocks : List.of(),
+                    signs != null ? signs : List.of(),
+                    containers != null ? containers : List.of(),
+                    entities != null ? entities : List.of(),
+                    () -> {
+                        try {
+                            PluginChunkHolds.release(world, cx, cz);
+                        } finally {
+                            processNextModularChunk(chunkQueue, chunkBlocks, chunkSigns, chunkContainers, chunkEntities);
+                        }
                     }
+            );
 
-                    List<NativeSignPlacement> signs = chunkSigns.getOrDefault(chunkKey, List.of());
-                    for (NativeSignPlacement sp : signs) {
-                        processNativeSign(sp);
-                    }
+            PlatformScheduler.runRegion(world, cx, cz, task);
+        });
+    }
 
-                    List<NativeContainerPlacement> containers = chunkContainers.getOrDefault(chunkKey, List.of());
-                    for (NativeContainerPlacement cp : containers) {
-                        processNativeContainer(cp);
-                    }
+    private final class ModularChunkPasteTask implements Runnable {
+        private final int cx;
+        private final int cz;
+        private final List<NativeBlockPlacement> blocks;
+        private final List<NativeSignPlacement> signs;
+        private final List<NativeContainerPlacement> containers;
+        private final List<NativeEntityPlacement> entities;
+        private final Runnable onChunkDone;
 
-                    List<NativeEntityPlacement> entities = chunkEntities.getOrDefault(chunkKey, List.of());
-                    for (NativeEntityPlacement ep : entities) {
-                        processNativeEntity(ep);
-                    }
+        private int phase = 0;
+        private int blockCursor = 0;
+        private int signCursor = 0;
+        private int containerCursor = 0;
+        private int entityCursor = 0;
+        private boolean finished = false;
 
-                    if (remainingChunks.decrementAndGet() == 0) {
-                        finishNativePaste(heldChunks);
+        private ModularChunkPasteTask(
+                int cx,
+                int cz,
+                List<NativeBlockPlacement> blocks,
+                List<NativeSignPlacement> signs,
+                List<NativeContainerPlacement> containers,
+                List<NativeEntityPlacement> entities,
+                Runnable onChunkDone
+        ) {
+            this.cx = cx;
+            this.cz = cz;
+            this.blocks = blocks;
+            this.signs = signs;
+            this.containers = containers;
+            this.entities = entities;
+            this.onChunkDone = onChunkDone;
+        }
+
+        @Override
+        public void run() {
+            if (finished) return;
+            if (Bukkit.getWorld(world.getUID()) != world) {
+                finished = true;
+                onChunkDone.run();
+                return;
+            }
+
+            long deadline = System.nanoTime() + MAX_MODULAR_NANOS_PER_TICK;
+
+            try {
+                // Phase 0: Blocks
+                if (phase == 0) {
+                    while (blockCursor < blocks.size()) {
+                        try {
+                            NativeBlockPlacement bp = blocks.get(blockCursor);
+                            Block b = world.getBlockAt(bp.wx(), bp.wy(), bp.wz());
+                            BlockData newData = bp.data();
+                            Material newMat = newData.getMaterial();
+                            Material curMat = b.getType();
+                            if (!(newMat.isAir() && curMat.isAir())
+                                    && !(curMat == newMat && b.getBlockData().equals(newData))) {
+                                b.setBlockData(newData, false);
+                            }
+                        } catch (Throwable t) {
+                            Logger.warn("Failed to place modular block in chunk (" + cx + "," + cz + "): " + t.getMessage());
+                        }
+                        blockCursor++;
+                        if (System.nanoTime() >= deadline && blockCursor < blocks.size()) {
+                            PlatformScheduler.runRegionLater(world, cx, cz, this, 1L);
+                            return;
+                        }
                     }
-                });
-            });
+                    phase = 1;
+                    if (System.nanoTime() >= deadline && (!signs.isEmpty() || !containers.isEmpty() || !entities.isEmpty())) {
+                        PlatformScheduler.runRegionLater(world, cx, cz, this, 1L);
+                        return;
+                    }
+                }
+
+                // Phase 1: Signs
+                if (phase == 1) {
+                    while (signCursor < signs.size()) {
+                        try {
+                            processNativeSign(signs.get(signCursor));
+                        } catch (Throwable t) {
+                            Logger.warn("Failed to process modular sign in chunk (" + cx + "," + cz + "): " + t.getMessage());
+                        }
+                        signCursor++;
+                        if (System.nanoTime() >= deadline && signCursor < signs.size()) {
+                            PlatformScheduler.runRegionLater(world, cx, cz, this, 1L);
+                            return;
+                        }
+                    }
+                    phase = 2;
+                    if (System.nanoTime() >= deadline && (!containers.isEmpty() || !entities.isEmpty())) {
+                        PlatformScheduler.runRegionLater(world, cx, cz, this, 1L);
+                        return;
+                    }
+                }
+
+                // Phase 2: Containers
+                if (phase == 2) {
+                    while (containerCursor < containers.size()) {
+                        try {
+                            processNativeContainer(containers.get(containerCursor));
+                        } catch (Throwable t) {
+                            Logger.warn("Failed to fill modular container in chunk (" + cx + "," + cz + "): " + t.getMessage());
+                        }
+                        containerCursor++;
+                        if (System.nanoTime() >= deadline && containerCursor < containers.size()) {
+                            PlatformScheduler.runRegionLater(world, cx, cz, this, 1L);
+                            return;
+                        }
+                    }
+                    phase = 3;
+                    if (System.nanoTime() >= deadline && !entities.isEmpty()) {
+                        PlatformScheduler.runRegionLater(world, cx, cz, this, 1L);
+                        return;
+                    }
+                }
+
+                // Phase 3: Entities
+                if (phase == 3) {
+                    while (entityCursor < entities.size()) {
+                        try {
+                            processNativeEntity(entities.get(entityCursor));
+                        } catch (Throwable t) {
+                            Logger.warn("Failed to spawn modular entity in chunk (" + cx + "," + cz + "): " + t.getMessage());
+                        }
+                        entityCursor++;
+                        if (System.nanoTime() >= deadline && entityCursor < entities.size()) {
+                            PlatformScheduler.runRegionLater(world, cx, cz, this, 1L);
+                            return;
+                        }
+                    }
+                    phase = 4;
+                }
+            } catch (Throwable fatal) {
+                Logger.warn("Unexpected error during modular chunk paste (" + cx + "," + cz + "): " + fatal.getMessage());
+            }
+
+            finished = true;
+            onChunkDone.run();
         }
     }
 
-    private void finishNativePaste(Set<Chunk> heldChunks) {
-        for (Chunk chunk : heldChunks) {
-            PluginChunkHolds.release(chunk);
-        }
-        heldChunks.clear();
+    private void finishNativePaste() {
         if (createModularWorld) {
-            if (modularWorld == null) modularWorld = createWorld();
-            modularWorld.generationFinished();
+            PlatformScheduler.runRegion(startLocation, () -> {
+                if (modularWorld == null) modularWorld = createWorld();
+                modularWorld.generationFinished();
+            });
         }
     }
 

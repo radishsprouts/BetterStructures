@@ -10,35 +10,32 @@ import org.bukkit.Bukkit;
 import org.bukkit.Chunk;
 import org.bukkit.World;
 
-import java.lang.reflect.Method;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
- * Runs the terrain scans of new structure grid chunks without loading chunks on the server thread.
- * <p>
- * A grid chunk is held from its load event until its scans finish. Its plugin ticket also brings
- * every chunk within two of it to full status. A scan that reads a chunk that is not loaded yet
- * (see {@link TerrainReads}) runs again, with the same schematic and anchor, once every chunk it
- * missed has loaded. Chunks beyond the grid chunk's ticket are requested without blocking and held
- * until the scans finish. Spigot has no asynchronous chunk API, so there they load synchronously,
- * one per tick. A scan still waiting after a minute is dropped: Paper can leave a chunk stuck
- * partway through generation for good (PaperMC/Paper#11174), and waiting for one on the server
- * thread froze the server.
+ * Runs terrain scans of new structure grid chunks with bounded concurrency and minimal chunk ticket retention.
  */
 final class TerrainScanQueue {
     private static final long TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(60);
     private static final long WARNING_INTERVAL_NANOS = TimeUnit.MINUTES.toNanos(1);
-    // A plugin ticket brings its chunk and every chunk within this distance of it to full status.
     private static final int TICKET_RADIUS = 2;
-    private static final Map<NewChunkLoadEvent.LoadingChunkKey, Job> jobs = new ConcurrentHashMap<>();
-    private static final ConcurrentLinkedQueue<Request> synchronousRequests = new ConcurrentLinkedQueue<>();
+    private static final int MAX_ACTIVE_JOBS = 2;
+    private static final int MAX_IN_FLIGHT_CHUNK_LOADS = 2;
+
+    private static final Set<NewChunkLoadEvent.LoadingChunkKey> knownKeys = ConcurrentHashMap.newKeySet();
+    private static final ConcurrentLinkedQueue<PendingJob> pendingQueue = new ConcurrentLinkedQueue<>();
+    private static final Map<NewChunkLoadEvent.LoadingChunkKey, Job> activeJobs = new ConcurrentHashMap<>();
+    private static final AtomicInteger promotingCount = new AtomicInteger(0);
+    private static final AtomicInteger inFlightChunkLoads = new AtomicInteger(0);
+
     private static PlatformScheduler.TaskHandle driver;
     private static boolean warned;
     private static long lastWarning;
@@ -47,41 +44,55 @@ final class TerrainScanQueue {
     private TerrainScanQueue() {
     }
 
-    /** Holds a new grid chunk and starts its scans on the next tick. */
-    static void enqueue(NewChunkLoadEvent.LoadingChunkKey key, Chunk grid, List<Supplier<FitAnything>> scans) {
-        if (scans.isEmpty() || jobs.containsKey(key)) return;
-        PluginChunkHolds.hold(grid);
-        jobs.put(key, new Job(key, grid, scans));
-        if (driver == null)
-            driver = PlatformScheduler.runGlobalTimer(TerrainScanQueue::tick, 1L, 1L);
+    private record PendingJob(
+            NewChunkLoadEvent.LoadingChunkKey key,
+            World world,
+            int gridX,
+            int gridZ,
+            List<Supplier<FitAnything>> scans
+    ) {
     }
 
-    /**
-     * Whether a waiting scan asked for this chunk. Such a chunk starts no scans of its own: a
-     * scan's reads used to load it synchronously and were skipped the same way, because scans
-     * started by other scans can spread generation across the world when structures are close.
-     */
+    /** Queues a new grid chunk scan without holding chunk tickets while waiting in the queue. */
+    static void enqueue(NewChunkLoadEvent.LoadingChunkKey key, Chunk grid, List<Supplier<FitAnything>> scans) {
+        if (scans.isEmpty() || !knownKeys.add(key)) return;
+        pendingQueue.add(new PendingJob(key, grid.getWorld(), grid.getX(), grid.getZ(), scans));
+        ensureDriver();
+    }
+
+    private static synchronized void ensureDriver() {
+        if (driver == null && MetadataHandler.PLUGIN != null && MetadataHandler.PLUGIN.isEnabled()) {
+            driver = PlatformScheduler.runGlobalTimer(TerrainScanQueue::tick, 1L, 1L);
+        }
+    }
+
+    /** Whether an active scan asked for this chunk, so it does not trigger recursive structure scans. */
     static boolean requested(Chunk chunk) {
-        if (jobs.isEmpty()) return false;
+        if (activeJobs.isEmpty()) return false;
         World world = chunk.getWorld();
         long key = TerrainReads.key(chunk.getX(), chunk.getZ());
-        for (Job job : jobs.values())
+        for (Job job : activeJobs.values()) {
             if (job.world == world && job.requested.contains(key)) return true;
+        }
         return false;
     }
 
-    /**
-     * Drops every scan and its chunk holds. A scan that has not run yet is passed to replay, when
-     * given. One that has run is dropped: it holds schematics from before a reload, and running it
-     * again could place a second structure.
-     */
-    static void clear(Consumer<NewChunkLoadEvent.LoadingChunkKey> replay) {
-        for (Job job : jobs.values()) {
+    /** Drops every scan and its chunk holds. Unstarted scans are passed to replay when given. */
+    static synchronized void clear(Consumer<NewChunkLoadEvent.LoadingChunkKey> replay) {
+        PendingJob pending;
+        while ((pending = pendingQueue.poll()) != null) {
+            knownKeys.remove(pending.key);
+            if (replay != null) replay.accept(pending.key);
+        }
+        for (Job job : activeJobs.values()) {
+            knownKeys.remove(job.key);
             if (replay != null && !job.started) replay.accept(job.key);
             job.close();
         }
-        jobs.clear();
-        synchronousRequests.clear();
+        activeJobs.clear();
+        knownKeys.clear();
+        promotingCount.set(0);
+        inFlightChunkLoads.set(0);
         if (driver != null) {
             driver.cancel();
             driver = null;
@@ -89,12 +100,11 @@ final class TerrainScanQueue {
     }
 
     private static void tick() {
-        loadNextSynchronousRequest();
-        // A scan can place a structure, and anything that runs then may load a chunk and add a job.
-        for (Job job : new ArrayList<>(jobs.values())) {
-            if (job.closed || job.running) continue;
-            // An unloaded world took its chunks and tickets with it.
-            if (Bukkit.getWorld(job.world.getUID()) != job.world || !job.grid.isLoaded()) {
+        promotePendingJobs();
+
+        for (Job job : new ArrayList<>(activeJobs.values())) {
+            if (job.closed.get() || job.running.get()) continue;
+            if (Bukkit.getWorld(job.world.getUID()) != job.world) {
                 finish(job);
                 continue;
             }
@@ -105,69 +115,77 @@ final class TerrainScanQueue {
                 }
                 continue;
             }
-            if (PlatformScheduler.isFolia()) {
-                job.running = true;
-                PlatformScheduler.runRegion(job.world, job.grid.getX(), job.grid.getZ(), () -> {
-                    try {
-                        if (job.closed) return;
-                        job.run();
-                        if (job.waiting.isEmpty()) {
-                            finish(job);
-                            return;
-                        }
+            if (!job.running.compareAndSet(false, true)) continue;
+
+            PlatformScheduler.runRegion(job.world, job.gridX, job.gridZ, () -> {
+                try {
+                    if (job.closed.get()) return;
+                    if (!job.world.isChunkLoaded(job.gridX, job.gridZ)) {
                         job.waitingSince = System.nanoTime();
-                        job.ready();
-                    } finally {
-                        job.running = false;
+                        return;
                     }
-                });
-            } else {
-                job.run();
-                if (job.waiting.isEmpty()) {
+                    job.runScanStep();
+                    if (job.waiting.isEmpty()) {
+                        finish(job);
+                        return;
+                    }
+                    job.waitingSince = System.nanoTime();
+                    job.ready();
+                } catch (Throwable t) {
+                    MetadataHandler.PLUGIN.getLogger().log(Level.WARNING,
+                            "Unexpected error in terrain scan job at " + job.key, t);
                     finish(job);
-                    continue;
+                } finally {
+                    job.running.set(false);
                 }
-                job.waitingSince = System.nanoTime();
-                job.ready();
+            });
+        }
+
+        if (activeJobs.isEmpty() && pendingQueue.isEmpty() && promotingCount.get() == 0) {
+            synchronized (TerrainScanQueue.class) {
+                if (activeJobs.isEmpty() && pendingQueue.isEmpty() && promotingCount.get() == 0 && driver != null) {
+                    driver.cancel();
+                    driver = null;
+                }
             }
         }
-        if (jobs.isEmpty() && synchronousRequests.isEmpty() && driver != null) {
-            driver.cancel();
-            driver = null;
+    }
+
+    private static void promotePendingJobs() {
+        while (activeJobs.size() + promotingCount.get() < MAX_ACTIVE_JOBS) {
+            PendingJob pending = pendingQueue.poll();
+            if (pending == null) break;
+
+            if (Bukkit.getWorld(pending.world.getUID()) != pending.world) {
+                knownKeys.remove(pending.key);
+                continue;
+            }
+
+            promotingCount.incrementAndGet();
+            // Hold the grid chunk only once promoted to an active job
+            PluginChunkHolds.hold(pending.world, pending.gridX, pending.gridZ);
+
+            pending.world.getChunkAtAsync(pending.gridX, pending.gridZ, true).whenComplete((chunk, ex) -> {
+                try {
+                    if (ex != null || chunk == null || !chunk.isLoaded()
+                            || Bukkit.getWorld(pending.world.getUID()) != pending.world) {
+                        PluginChunkHolds.release(pending.world, pending.gridX, pending.gridZ);
+                        knownKeys.remove(pending.key);
+                        return;
+                    }
+                    Job job = new Job(pending.key, pending.world, pending.gridX, pending.gridZ, pending.scans);
+                    activeJobs.put(pending.key, job);
+                } finally {
+                    promotingCount.decrementAndGet();
+                }
+            });
         }
     }
 
     private static void finish(Job job) {
-        jobs.remove(job.key);
+        activeJobs.remove(job.key);
+        knownKeys.remove(job.key);
         job.close();
-    }
-
-    private static void loadNextSynchronousRequest() {
-        Request request;
-        while ((request = synchronousRequests.poll()) != null) {
-            Job job = request.job();
-            int x = TerrainReads.chunkX(request.chunk()), z = TerrainReads.chunkZ(request.chunk());
-            if (job.closed || job.world.isChunkLoaded(x, z)) continue;
-            if (PlatformScheduler.isFolia()) {
-                final Request currentRequest = request;
-                job.world.getChunkAtAsync(x, z, true).thenAccept(loadedChunk -> {
-                    if (job.closed || loadedChunk == null || !loadedChunk.isLoaded()) return;
-                    job.hold(currentRequest.chunk(), loadedChunk);
-                }).exceptionally(ex -> {
-                    job.requested.remove(currentRequest.chunk());
-                    return null;
-                });
-                return;
-            }
-            try {
-                job.hold(request.chunk(), job.world.getChunkAt(x, z));
-            } catch (Throwable failure) {
-                job.requested.remove(request.chunk());
-                MetadataHandler.PLUGIN.getLogger().log(Level.WARNING, "Failed to load chunk " + x + ", " + z
-                        + " in " + job.world.getName() + " for a structure scan", failure);
-            }
-            return;
-        }
     }
 
     private static void warnTimedOut(Job job) {
@@ -181,63 +199,57 @@ final class TerrainScanQueue {
             int x = TerrainReads.chunkX(chunk), z = TerrainReads.chunkZ(chunk);
             if (!job.world.isChunkLoaded(x, z)) missing.add("(" + x + ", " + z + ")");
         }
-        Logger.warn("Skipped structure placement at chunk " + job.grid.getX() + ", " + job.grid.getZ() + " in "
+        Logger.warn("Skipped structure placement at chunk " + job.gridX + ", " + job.gridZ + " in "
                 + job.world.getName() + " because chunks " + String.join(", ", missing)
-                + " did not finish loading within 60 seconds. Paper can leave a chunk stuck partway through"
-                + " generation (PaperMC/Paper#11174); BetterStructures skips it instead of waiting on the server thread."
+                + " did not finish loading within 60 seconds."
                 + (suppressedWarnings > 0 ? " " + suppressedWarnings + " more scans were skipped the same way since the last warning." : ""));
         warned = true;
         lastWarning = now;
         suppressedWarnings = 0;
     }
 
-    private record Request(Job job, long chunk) {
-    }
-
     private static final class Job {
         private final NewChunkLoadEvent.LoadingChunkKey key;
-        private final Chunk grid;
         private final World world;
-        private final Method asyncLoad;
+        private final int gridX;
+        private final int gridZ;
         private List<Supplier<FitAnything>> scans;
-        private final List<FitAnything> waiting = new ArrayList<>();
-        // Chunks the waiting scans could not read, and those of them this job asked to load.
-        private final Set<Long> awaited = new HashSet<>();
-        private final Set<Long> requested = new HashSet<>();
-        private final Map<Long, Chunk> held = new HashMap<>();
-        private long waitingSince;
-        private boolean started;
-        private boolean closed;
-        private volatile boolean running;
+        private final List<FitAnything> waiting = Collections.synchronizedList(new ArrayList<>());
+        private final Set<Long> awaited = ConcurrentHashMap.newKeySet();
+        private final Set<Long> requested = ConcurrentHashMap.newKeySet();
+        private final Set<Long> held = ConcurrentHashMap.newKeySet();
+        private volatile long waitingSince = System.nanoTime();
+        private volatile boolean started;
+        private final AtomicBoolean closed = new AtomicBoolean(false);
+        private final AtomicBoolean running = new AtomicBoolean(false);
 
-        private Job(NewChunkLoadEvent.LoadingChunkKey key, Chunk grid, List<Supplier<FitAnything>> scans) {
+        private Job(NewChunkLoadEvent.LoadingChunkKey key, World world, int gridX, int gridZ, List<Supplier<FitAnything>> scans) {
             this.key = key;
-            this.grid = grid;
-            this.world = grid.getWorld();
+            this.world = world;
+            this.gridX = gridX;
+            this.gridZ = gridZ;
             this.scans = scans;
-            Method method;
-            try {
-                method = world.getClass().getMethod("getChunkAtAsync", int.class, int.class, boolean.class);
-            } catch (NoSuchMethodException spigot) {
-                method = null;
-            }
-            asyncLoad = method;
         }
 
-        /** Runs the scans that have not run yet and those waiting for chunks that have now loaded. */
-        private void run() {
+        private void runScanStep() {
             started = true;
             List<Supplier<FitAnything>> attempts = new ArrayList<>();
-            if (scans != null) attempts.addAll(scans);
-            scans = null;
-            for (FitAnything fit : waiting)
-                attempts.add(() -> {
-                    fit.rescan();
-                    return fit;
-                });
-            waiting.clear();
+            if (scans != null) {
+                attempts.addAll(scans);
+                scans = null;
+            }
+            synchronized (waiting) {
+                for (FitAnything fit : waiting) {
+                    attempts.add(() -> {
+                        fit.rescan();
+                        return fit;
+                    });
+                }
+                waiting.clear();
+            }
             awaited.clear();
             requested.clear();
+
             for (Supplier<FitAnything> attempt : attempts) {
                 List<FitAnything> fit = new ArrayList<>(1);
                 Set<Long> misses;
@@ -245,72 +257,69 @@ final class TerrainScanQueue {
                     misses = TerrainReads.collectMisses(() -> fit.add(attempt.get()));
                 } catch (Throwable failure) {
                     MetadataHandler.PLUGIN.getLogger().log(Level.WARNING, "Failed chunk scan at "
-                            + world.getName() + " " + grid.getX() + ", " + grid.getZ(), failure);
+                            + world.getName() + " " + gridX + ", " + gridZ, failure);
                     continue;
                 }
-                if (misses.isEmpty() || fit.get(0) == null) continue;
+                if (misses.isEmpty() || fit.isEmpty() || fit.get(0) == null) continue;
                 waiting.add(fit.get(0));
                 awaited.addAll(misses);
             }
         }
 
-        /** Whether every awaited chunk is loaded. Holds those beyond the grid ticket and requests the rest. */
         private boolean ready() {
-            boolean ready = true;
+            boolean allLoaded = true;
             for (long chunk : awaited) {
                 int x = TerrainReads.chunkX(chunk), z = TerrainReads.chunkZ(chunk);
                 if (world.isChunkLoaded(x, z)) {
-                    if (!PlatformScheduler.isFolia()) {
-                        hold(chunk, world.getChunkAt(x, z));
-                    }
+                    holdChunkKey(chunk);
                 } else {
-                    ready = false;
-                    request(chunk);
+                    allLoaded = false;
+                    requestChunk(chunk);
                 }
             }
-            return ready;
+            return allLoaded;
         }
 
-        private void request(long chunk) {
-            // The grid chunk's own ticket is already loading it.
-            if (withinGridTicket(chunk) || !requested.add(chunk)) return;
-            if (asyncLoad == null) {
-                synchronousRequests.add(new Request(this, chunk));
-                return;
-            }
-            CompletableFuture<?> load;
-            try {
-                load = (CompletableFuture<?>) asyncLoad.invoke(world, TerrainReads.chunkX(chunk), TerrainReads.chunkZ(chunk), true);
-            } catch (ReflectiveOperationException failure) {
-                throw new IllegalStateException("Could not request a Paper chunk for a structure scan", failure);
-            }
-            // Paper completes the request on the server thread, then drops its own load ticket:
-            // the chunk must be held here or it unloads before the scan runs.
-            load.whenComplete((loaded, failure) -> {
-                if (closed) return;
-                if (failure == null && loaded instanceof Chunk loadedChunk && loadedChunk.isLoaded())
-                    hold(chunk, loadedChunk);
-                else
-                    requested.remove(chunk);
+        private void requestChunk(long chunk) {
+            if (withinGridTicket(chunk) || requested.contains(chunk)) return;
+            // Throttle concurrent async chunk loads across scans to avoid disk I/O spikes
+            if (inFlightChunkLoads.get() >= MAX_IN_FLIGHT_CHUNK_LOADS) return;
+            if (!requested.add(chunk)) return;
+
+            inFlightChunkLoads.incrementAndGet();
+            int x = TerrainReads.chunkX(chunk);
+            int z = TerrainReads.chunkZ(chunk);
+
+            world.getChunkAtAsync(x, z, true).whenComplete((loaded, failure) -> {
+                try {
+                    if (closed.get()) return;
+                    if (failure == null && loaded != null && loaded.isLoaded()) {
+                        holdChunkKey(chunk);
+                    } else {
+                        requested.remove(chunk);
+                    }
+                } finally {
+                    inFlightChunkLoads.decrementAndGet();
+                }
             });
         }
 
-        private void hold(long chunk, Chunk loaded) {
-            if (withinGridTicket(chunk) || held.containsKey(chunk)) return;
-            held.put(chunk, loaded);
-            PluginChunkHolds.hold(loaded);
+        private void holdChunkKey(long chunk) {
+            if (withinGridTicket(chunk) || !held.add(chunk)) return;
+            PluginChunkHolds.hold(world, TerrainReads.chunkX(chunk), TerrainReads.chunkZ(chunk));
         }
 
         private boolean withinGridTicket(long chunk) {
-            return Math.abs(TerrainReads.chunkX(chunk) - grid.getX()) <= TICKET_RADIUS
-                    && Math.abs(TerrainReads.chunkZ(chunk) - grid.getZ()) <= TICKET_RADIUS;
+            return Math.abs(TerrainReads.chunkX(chunk) - gridX) <= TICKET_RADIUS
+                    && Math.abs(TerrainReads.chunkZ(chunk) - gridZ) <= TICKET_RADIUS;
         }
 
         private void close() {
-            if (closed) return;
-            closed = true;
-            PluginChunkHolds.release(grid);
-            for (Chunk chunk : held.values()) PluginChunkHolds.release(chunk);
+            if (!closed.compareAndSet(false, true)) return;
+            PluginChunkHolds.release(world, gridX, gridZ);
+            for (long chunk : held) {
+                PluginChunkHolds.release(world, TerrainReads.chunkX(chunk), TerrainReads.chunkZ(chunk));
+            }
             held.clear();
         }
     }

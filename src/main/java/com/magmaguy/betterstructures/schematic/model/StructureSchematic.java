@@ -10,6 +10,7 @@ import org.bukkit.entity.EntityType;
 import org.bukkit.util.Vector;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Independent in-memory model of a Minecraft structure/schematic (.schem).
@@ -49,6 +50,8 @@ public final class StructureSchematic {
     private final Map<Vector, List<String>> customMarkers = new HashMap<>();
     @Getter
     private final Map<Vector, Material> chestMarkers = new HashMap<>();
+
+    private final Map<Integer, StructureSchematic> rotatedCache = new ConcurrentHashMap<>();
 
     public StructureSchematic(
             short width,
@@ -218,12 +221,15 @@ public final class StructureSchematic {
     public StructureSchematic rotate(int degrees) {
         int normalized = ((degrees % 360) + 360) % 360;
         if (normalized == 0) return this;
+        return rotatedCache.computeIfAbsent(normalized, this::createRotatedCopy);
+    }
 
+    private StructureSchematic createRotatedCopy(int normalized) {
         StructureRotation rotation = switch (normalized) {
             case 90 -> StructureRotation.CLOCKWISE_90;
             case 180 -> StructureRotation.CLOCKWISE_180;
             case 270 -> StructureRotation.COUNTERCLOCKWISE_90;
-            default -> throw new IllegalArgumentException("Only 0, 90, 180, 270 degree rotations are supported: " + degrees);
+            default -> throw new IllegalArgumentException("Only 0, 90, 180, 270 degree rotations are supported: " + normalized);
         };
 
         short newWidth = (normalized == 90 || normalized == 270) ? length : width;

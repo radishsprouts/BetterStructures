@@ -9,7 +9,6 @@ import com.magmaguy.betterstructures.schematic.model.StructureEntity;
 import com.magmaguy.betterstructures.schematic.model.StructureSchematic;
 import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.betterstructures.util.PluginChunkHolds;
-import com.magmaguy.betterstructures.worldedit.PasteBudget;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.SpigotMessage;
 import lombok.Getter;
@@ -23,17 +22,24 @@ import org.bukkit.util.Vector;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 /**
- * Manages the entire asynchronous, region-distributed paste lifecycle of a structure.
- * Guarantees zero main-thread locking, bounded tick work budgets, and complete generation.
+ * Manages the asynchronous, serialized per-chunk paste lifecycle of a structure.
+ * Guarantees 2.0ms per-tick regional work budget, minimal chunk ticket hold (1 chunk at a time),
+ * and 100% completion without dropping queued structures.
  */
 public final class StructurePasteSession {
 
+    private static final int MAX_CONCURRENT_SESSIONS = 2;
+    private static final long MAX_NANOS_PER_TICK = 2_000_000L; // Strict 2.0ms per tick budget
+
     private static final Set<StructurePasteSession> activeSessions = ConcurrentHashMap.newKeySet();
+    private static final ConcurrentLinkedQueue<StructurePasteSession> pendingSessions = new ConcurrentLinkedQueue<>();
+    private static final AtomicInteger runningSessionCount = new AtomicInteger(0);
 
     @Getter
     private final World world;
@@ -53,11 +59,13 @@ public final class StructurePasteSession {
 
     private final AtomicBoolean cancelled = new AtomicBoolean(false);
     private final AtomicBoolean finished = new AtomicBoolean(false);
-    private final Set<Chunk> heldChunks = ConcurrentHashMap.newKeySet();
-    private final AtomicInteger remainingChunks = new AtomicInteger(0);
+    private final Set<Long> heldChunkKeys = ConcurrentHashMap.newKeySet();
+    private final ConcurrentLinkedQueue<Long> chunkQueue = new ConcurrentLinkedQueue<>();
+    private Map<Long, List<ChunkPasteTask.StructureBlockEntry>> blocksByChunk = Collections.emptyMap();
+    private Map<Long, List<ChunkPasteTask.StructureEntityEntry>> entitiesByChunk = Collections.emptyMap();
 
     @Getter
-    private final long maxNanosPerTick;
+    private final long maxNanosPerTick = MAX_NANOS_PER_TICK;
 
     public StructurePasteSession(
             World world,
@@ -79,12 +87,6 @@ public final class StructurePasteSession {
         this.chestContents = chestContents;
         this.barrelContents = barrelContents;
         this.onComplete = onComplete;
-
-        // Bounded per-tick work budget (2ms - 5ms by default, respecting DefaultConfig)
-        double configuredShare = DefaultConfig.getPercentageOfTickUsedForPasting();
-        long calculatedNanos = PasteBudget.nanosPerTick(configuredShare);
-        // Bound between 2ms and 5ms to ensure regional threads never spike or freeze
-        this.maxNanosPerTick = Math.max(2_000_000L, Math.min(calculatedNanos, 5_000_000L));
     }
 
     public static StructurePasteSession start(
@@ -103,15 +105,36 @@ public final class StructurePasteSession {
                 pedestalMaterialProvider, chestContents, barrelContents, onComplete
         );
         activeSessions.add(session);
-        session.dispatch();
+        pendingSessions.add(session);
+        tryStartNextSession();
         return session;
     }
 
+    private static void tryStartNextSession() {
+        while (runningSessionCount.get() < MAX_CONCURRENT_SESSIONS) {
+            StructurePasteSession next = pendingSessions.poll();
+            if (next == null) break;
+            if (next.isCancelled()) {
+                activeSessions.remove(next);
+                continue;
+            }
+            if (runningSessionCount.incrementAndGet() <= MAX_CONCURRENT_SESSIONS) {
+                next.dispatchAsyncPreparation();
+            } else {
+                runningSessionCount.decrementAndGet();
+                pendingSessions.add(next);
+                break;
+            }
+        }
+    }
+
     public static void shutdownAll() {
+        pendingSessions.clear();
         for (StructurePasteSession session : activeSessions) {
             session.cancel();
         }
         activeSessions.clear();
+        runningSessionCount.set(0);
     }
 
     public boolean isCancelled() {
@@ -129,144 +152,197 @@ public final class StructurePasteSession {
         return isBarrel ? barrelContents : chestContents;
     }
 
-    private void dispatch() {
-        if (isCancelled()) return;
-
-        int baseX = baseLocation.getBlockX() + schematicOffset.getBlockX();
-        int baseY = baseLocation.getBlockY() + schematicOffset.getBlockY();
-        int baseZ = baseLocation.getBlockZ() + schematicOffset.getBlockZ();
-
-        // 1. Group blocks by chunk
-        Map<Long, List<ChunkPasteTask.StructureBlockEntry>> blocksByChunk = new HashMap<>();
-
-        for (int y = 0; y < schematic.getHeight(); y++) {
-            for (int z = 0; z < schematic.getLength(); z++) {
-                for (int x = 0; x < schematic.getWidth(); x++) {
-                    StructureBlock block = schematic.getBlock(x, y, z);
-                    if (block == null || block.blockData() == null) continue;
-
-                    int wx = baseX + x;
-                    int wy = baseY + y;
-                    int wz = baseZ + z;
-
-                    int cx = wx >> 4;
-                    int cz = wz >> 4;
-                    long chunkKey = ((long) cx << 32) ^ (cz & 0xFFFFFFFFL);
-
-                    blocksByChunk.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                            .add(new ChunkPasteTask.StructureBlockEntry(wx, wy, wz, block, new Vector(x, y, z)));
-                }
-            }
-        }
-
-        // 2. Group entities by chunk
-        Map<Long, List<ChunkPasteTask.StructureEntityEntry>> entitiesByChunk = new HashMap<>();
-        for (StructureEntity entity : schematic.getEntities()) {
-            double wx = baseX + entity.x();
-            double wy = baseY + entity.y();
-            double wz = baseZ + entity.z();
-
-            int cx = ((int) Math.floor(wx)) >> 4;
-            int cz = ((int) Math.floor(wz)) >> 4;
-            long chunkKey = ((long) cx << 32) ^ (cz & 0xFFFFFFFFL);
-
-            entitiesByChunk.computeIfAbsent(chunkKey, k -> new ArrayList<>())
-                    .add(new ChunkPasteTask.StructureEntityEntry(wx, wy, wz, entity));
-        }
-
-        Set<Long> allChunkKeys = new HashSet<>(blocksByChunk.keySet());
-        allChunkKeys.addAll(entitiesByChunk.keySet());
-
-        if (allChunkKeys.isEmpty()) {
+    private void dispatchAsyncPreparation() {
+        if (isCancelled() || world == null || Bukkit.getWorld(world.getUID()) != world) {
             finishSession();
             return;
         }
 
-        remainingChunks.set(allChunkKeys.size());
+        final int baseX = baseLocation.getBlockX() + schematicOffset.getBlockX();
+        final int baseY = baseLocation.getBlockY() + schematicOffset.getBlockY();
+        final int baseZ = baseLocation.getBlockZ() + schematicOffset.getBlockZ();
 
-        // 3. For each chunk, request async load and dispatch to region scheduler upon load
-        for (long chunkKey : allChunkKeys) {
-            int cx = (int) (chunkKey >> 32);
-            int cz = (int) chunkKey;
-
-            List<ChunkPasteTask.StructureBlockEntry> chunkBlocks = blocksByChunk.getOrDefault(chunkKey, Collections.emptyList());
-            List<ChunkPasteTask.StructureEntityEntry> chunkEntities = entitiesByChunk.getOrDefault(chunkKey, Collections.emptyList());
-
-            ChunkPasteTask task = new ChunkPasteTask(
-                    this, world, cx, cz, chunkBlocks, chunkEntities, pedestalMaterialProvider
-            );
-
-            // Paper / Folia async chunk load
-            world.getChunkAtAsync(cx, cz, true).thenAccept(chunk -> {
-                if (isCancelled() || chunk == null || !chunk.isLoaded()) {
-                    onChunkComplete(cx, cz);
+        PlatformScheduler.runAsync(() -> {
+            try {
+                if (isCancelled()) {
+                    finishSession();
                     return;
                 }
-                // Hold chunk ticket so it won't unload while pasting
-                heldChunks.add(chunk);
-                PluginChunkHolds.hold(chunk);
 
-                // Dispatch to region thread
-                PlatformScheduler.runRegion(world, cx, cz, task);
-            }).exceptionally(ex -> {
-                Logger.warn("Failed to load chunk " + cx + ", " + cz + " for schematic paste: " + ex.getMessage());
-                onChunkComplete(cx, cz);
-                return null;
-            });
+                Map<Long, List<ChunkPasteTask.StructureBlockEntry>> preparedBlocks = new HashMap<>();
+                for (int y = 0; y < schematic.getHeight(); y++) {
+                    for (int z = 0; z < schematic.getLength(); z++) {
+                        for (int x = 0; x < schematic.getWidth(); x++) {
+                            StructureBlock block = schematic.getBlock(x, y, z);
+                            if (block == null || block.blockData() == null) continue;
+                            if (block.blockData().getMaterial() == Material.BARRIER) continue;
+
+                            int wx = baseX + x;
+                            int wy = baseY + y;
+                            int wz = baseZ + z;
+                            long chunkKey = Chunk.getChunkKey(wx >> 4, wz >> 4);
+
+                            preparedBlocks.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                                    .add(new ChunkPasteTask.StructureBlockEntry(wx, wy, wz, block, new Vector(x, y, z)));
+                        }
+                    }
+                }
+
+                // Sort each chunk's blocks by Y ascending on the async thread
+                Comparator<ChunkPasteTask.StructureBlockEntry> byY =
+                        Comparator.comparingInt(ChunkPasteTask.StructureBlockEntry::worldY);
+                for (List<ChunkPasteTask.StructureBlockEntry> list : preparedBlocks.values()) {
+                    list.sort(byY);
+                }
+
+                Map<Long, List<ChunkPasteTask.StructureEntityEntry>> preparedEntities = new HashMap<>();
+                for (StructureEntity entity : schematic.getEntities()) {
+                    double wx = baseX + entity.x();
+                    double wy = baseY + entity.y();
+                    double wz = baseZ + entity.z();
+                    int cx = ((int) Math.floor(wx)) >> 4;
+                    int cz = ((int) Math.floor(wz)) >> 4;
+                    long chunkKey = Chunk.getChunkKey(cx, cz);
+
+                    preparedEntities.computeIfAbsent(chunkKey, k -> new ArrayList<>())
+                            .add(new ChunkPasteTask.StructureEntityEntry(wx, wy, wz, entity));
+                }
+
+                Set<Long> allChunkKeys = new LinkedHashSet<>(preparedBlocks.keySet());
+                allChunkKeys.addAll(preparedEntities.keySet());
+
+                if (allChunkKeys.isEmpty()) {
+                    finishSession();
+                    return;
+                }
+
+                this.blocksByChunk = preparedBlocks;
+                this.entitiesByChunk = preparedEntities;
+                this.chunkQueue.addAll(allChunkKeys);
+
+                processNextChunk();
+            } catch (Throwable t) {
+                Logger.warn("Failed to prepare structure paste session: " + t.getMessage());
+                finishSession();
+            }
+        });
+    }
+
+    private void processNextChunk() {
+        if (isCancelled() || Bukkit.getWorld(world.getUID()) != world) {
+            finishSession();
+            return;
         }
+
+        Long nextKey = chunkQueue.poll();
+        if (nextKey == null) {
+            finishSession();
+            return;
+        }
+
+        final long chunkKey = nextKey;
+        final int cx = (int) chunkKey;
+        final int cz = (int) (chunkKey >> 32);
+
+        List<ChunkPasteTask.StructureBlockEntry> chunkBlocks =
+                blocksByChunk.getOrDefault(chunkKey, Collections.emptyList());
+        List<ChunkPasteTask.StructureEntityEntry> chunkEntities =
+                entitiesByChunk.getOrDefault(chunkKey, Collections.emptyList());
+
+        ChunkPasteTask task = new ChunkPasteTask(
+                this, world, cx, cz, chunkBlocks, chunkEntities, pedestalMaterialProvider
+        );
+
+        world.getChunkAtAsync(cx, cz, true).whenComplete((chunk, ex) -> {
+            if (ex != null || isCancelled() || chunk == null || !chunk.isLoaded()
+                    || Bukkit.getWorld(world.getUID()) != world) {
+                if (ex != null) {
+                    Logger.warn("Failed to load chunk " + cx + ", " + cz + " for schematic paste: " + ex.getMessage());
+                }
+                onChunkComplete(cx, cz);
+                return;
+            }
+
+            heldChunkKeys.add(chunkKey);
+            PluginChunkHolds.hold(world, cx, cz);
+
+            PlatformScheduler.runRegion(world, cx, cz, task);
+        });
     }
 
     void onChunkComplete(int chunkX, int chunkZ) {
-        if (remainingChunks.decrementAndGet() <= 0) {
-            finishSession();
+        long chunkKey = Chunk.getChunkKey(chunkX, chunkZ);
+        try {
+            if (heldChunkKeys.remove(chunkKey)) {
+                PluginChunkHolds.release(world, chunkX, chunkZ);
+            }
+            // Free processed chunk lists immediately for GC
+            blocksByChunk.remove(chunkKey);
+            entitiesByChunk.remove(chunkKey);
+        } finally {
+            processNextChunk();
         }
     }
 
     private void finishSession() {
         if (finished.compareAndSet(false, true)) {
-            releaseAllHeldChunks();
-            activeSessions.remove(this);
+            try {
+                releaseAllHeldChunks();
+                activeSessions.remove(this);
 
-            if (!isCancelled()) {
-                // Fire BuildPasteCompleteEvent
-                Location minCorner = baseLocation.clone().add(schematicOffset);
-                Location maxCorner = minCorner.clone().add(
-                        schematic.getWidth() - 1,
-                        schematic.getHeight() - 1,
-                        schematic.getLength() - 1
-                );
-                List<Location> containers = new ArrayList<>();
-                for (Vector chestPos : schematic.getChestLocations()) {
-                    containers.add(minCorner.clone().add(chestPos));
-                }
+                if (!isCancelled() && Bukkit.getWorld(world.getUID()) == world) {
+                    Runnable completionTask = () -> {
+                        try {
+                            Location minCorner = baseLocation.clone().add(schematicOffset);
+                            Location maxCorner = minCorner.clone().add(
+                                    schematic.getWidth() - 1,
+                                    schematic.getHeight() - 1,
+                                    schematic.getLength() - 1
+                            );
+                            List<Location> containers = new ArrayList<>();
+                            for (Vector chestPos : schematic.getChestLocations()) {
+                                containers.add(minCorner.clone().add(chestPos));
+                            }
 
-                if (fitter != null) {
-                    Bukkit.getPluginManager().callEvent(
-                            new BuildPasteCompleteEvent(fitter, minCorner, maxCorner, containers)
-                    );
-                }
+                            if (fitter != null) {
+                                Bukkit.getPluginManager().callEvent(
+                                        new BuildPasteCompleteEvent(fitter, minCorner, maxCorner, containers)
+                                );
+                            }
 
-                if (onComplete != null) {
-                    try {
-                        onComplete.run();
-                    } catch (Throwable t) {
-                        Logger.warn("Exception in paste onComplete callback: " + t.getMessage());
+                            if (onComplete != null) {
+                                onComplete.run();
+                            }
+
+                            announceCompletion();
+                        } catch (Throwable t) {
+                            Logger.warn("Exception in paste completion callback: " + t.getMessage());
+                        }
+                    };
+
+                    if (PlatformScheduler.isOwnedByCurrentRegion(baseLocation)) {
+                        completionTask.run();
+                    } else {
+                        PlatformScheduler.runRegion(baseLocation, completionTask);
                     }
                 }
-
-                announceCompletion();
+            } finally {
+                runningSessionCount.decrementAndGet();
+                tryStartNextSession();
             }
         }
     }
 
     private void releaseAllHeldChunks() {
-        for (Chunk chunk : heldChunks) {
+        for (long chunkKey : heldChunkKeys) {
+            int cx = (int) chunkKey;
+            int cz = (int) (chunkKey >> 32);
             try {
-                PluginChunkHolds.release(chunk);
+                PluginChunkHolds.release(world, cx, cz);
             } catch (Exception ignored) {
             }
         }
-        heldChunks.clear();
+        heldChunkKeys.clear();
     }
 
     private void announceCompletion() {

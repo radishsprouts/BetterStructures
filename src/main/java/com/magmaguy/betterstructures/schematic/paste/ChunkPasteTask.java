@@ -46,8 +46,14 @@ public final class ChunkPasteTask implements Runnable {
     private final List<StructureEntityEntry> entities;
     private final Function<Boolean, Material> pedestalMaterialProvider;
 
+    private final List<StructureBlockEntry> signEntries = new ArrayList<>();
+    private final List<StructureBlockEntry> containerEntries = new ArrayList<>();
+
+    private int phase = 0;
     private int blockCursor = 0;
-    private boolean blocksFinished = false;
+    private int signCursor = 0;
+    private int containerCursor = 0;
+    private int entityCursor = 0;
     private boolean completed = false;
 
     public record StructureBlockEntry(
@@ -80,65 +86,156 @@ public final class ChunkPasteTask implements Runnable {
         this.world = world;
         this.chunkX = chunkX;
         this.chunkZ = chunkZ;
-        this.blocks = blocks != null ? blocks : new ArrayList<>();
-        this.entities = entities != null ? entities : new ArrayList<>();
+        this.blocks = blocks != null ? blocks : Collections.emptyList();
+        this.entities = entities != null ? entities : Collections.emptyList();
         this.pedestalMaterialProvider = pedestalMaterialProvider;
 
-        // Sort blocks by Y ascending (bottom to top) to prevent gravity block falling or torch dropping
-        this.blocks.sort(Comparator.comparingInt(StructureBlockEntry::worldY));
+        // Pre-index only signs and containers so we never call Block#getState() on normal blocks
+        for (StructureBlockEntry entry : this.blocks) {
+            StructureBlock sb = entry.block();
+            if (sb == null || sb.blockData() == null) continue;
+            if (sb.isSign()) {
+                signEntries.add(entry);
+            }
+            Material mat = sb.blockData().getMaterial();
+            if (isContainerMaterial(mat)) {
+                containerEntries.add(entry);
+            }
+        }
+    }
+
+    private static boolean isContainerMaterial(Material mat) {
+        return mat == Material.CHEST || mat == Material.TRAPPED_CHEST || mat == Material.BARREL
+                || (mat.name().endsWith("SHULKER_BOX") && !mat.name().startsWith("LEGACY_"));
     }
 
     @Override
     public void run() {
-        if (session.isCancelled() || completed) return;
+        if (completed) return;
+        if (session.isCancelled()) {
+            completed = true;
+            session.onChunkComplete(chunkX, chunkZ);
+            return;
+        }
 
-        // Bounded per-tick budget (default: 2ms - 5ms)
         long deadline = System.nanoTime() + session.getMaxNanosPerTick();
 
-        // 1. Paste blocks in slices
-        if (!blocksFinished) {
-            while (blockCursor < blocks.size()) {
-                StructureBlockEntry entry = blocks.get(blockCursor);
-                pasteSingleBlock(entry);
-                blockCursor++;
-
-                if (System.nanoTime() >= deadline && blockCursor < blocks.size()) {
-                    // Time budget exhausted, defer remaining blocks to the next tick on this region
+        try {
+            // Phase 0: Paste blocks
+            if (phase == 0) {
+                while (blockCursor < blocks.size()) {
+                    try {
+                        pasteSingleBlock(blocks.get(blockCursor));
+                    } catch (Throwable t) {
+                        Logger.warn("Failed to paste block in chunk (" + chunkX + "," + chunkZ + "): " + t.getMessage());
+                    }
+                    blockCursor++;
+                    if (System.nanoTime() >= deadline && blockCursor < blocks.size()) {
+                        PlatformScheduler.runRegionLater(world, chunkX, chunkZ, this, 1L);
+                        return;
+                    }
+                }
+                phase = 1;
+                if (System.nanoTime() >= deadline && (!signEntries.isEmpty() || !containerEntries.isEmpty() || !entities.isEmpty())) {
                     PlatformScheduler.runRegionLater(world, chunkX, chunkZ, this, 1L);
                     return;
                 }
             }
-            blocksFinished = true;
+
+            // Phase 1: Process signs (markers & normal text signs)
+            if (phase == 1) {
+                while (signCursor < signEntries.size()) {
+                    try {
+                        processSignEntry(signEntries.get(signCursor));
+                    } catch (Throwable t) {
+                        Logger.warn("Failed to process sign in chunk (" + chunkX + "," + chunkZ + "): " + t.getMessage());
+                    }
+                    signCursor++;
+                    if (System.nanoTime() >= deadline && signCursor < signEntries.size()) {
+                        PlatformScheduler.runRegionLater(world, chunkX, chunkZ, this, 1L);
+                        return;
+                    }
+                }
+                phase = 2;
+                if (System.nanoTime() >= deadline && (!containerEntries.isEmpty() || !entities.isEmpty())) {
+                    PlatformScheduler.runRegionLater(world, chunkX, chunkZ, this, 1L);
+                    return;
+                }
+            }
+
+            // Phase 2: Fill containers (chests, barrels, shulker boxes)
+            if (phase == 2) {
+                while (containerCursor < containerEntries.size()) {
+                    try {
+                        StructureBlockEntry entry = containerEntries.get(containerCursor);
+                        Block destination = world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ());
+                        if (destination.getState() instanceof Container container) {
+                            fillContainer(container, entry);
+                        }
+                    } catch (Throwable t) {
+                        Logger.warn("Failed to fill container in chunk (" + chunkX + "," + chunkZ + "): " + t.getMessage());
+                    }
+                    containerCursor++;
+                    if (System.nanoTime() >= deadline && containerCursor < containerEntries.size()) {
+                        PlatformScheduler.runRegionLater(world, chunkX, chunkZ, this, 1L);
+                        return;
+                    }
+                }
+                phase = 3;
+                if (System.nanoTime() >= deadline && !entities.isEmpty()) {
+                    PlatformScheduler.runRegionLater(world, chunkX, chunkZ, this, 1L);
+                    return;
+                }
+            }
+
+            // Phase 3: Spawn entities
+            if (phase == 3) {
+                while (entityCursor < entities.size()) {
+                    try {
+                        spawnEntity(entities.get(entityCursor));
+                    } catch (Throwable t) {
+                        Logger.warn("Failed to spawn entity in chunk (" + chunkX + "," + chunkZ + "): " + t.getMessage());
+                    }
+                    entityCursor++;
+                    if (System.nanoTime() >= deadline && entityCursor < entities.size()) {
+                        PlatformScheduler.runRegionLater(world, chunkX, chunkZ, this, 1L);
+                        return;
+                    }
+                }
+                phase = 4;
+            }
+        } catch (Throwable fatal) {
+            Logger.warn("Unexpected error during chunk paste (" + chunkX + "," + chunkZ + "): " + fatal.getMessage());
         }
 
-        // 2. Post-process block entities, signs, containers, and entity spawns
-        postProcessChunk();
-
-        // 3. Mark chunk complete in session
         completed = true;
         session.onChunkComplete(chunkX, chunkZ);
     }
 
     private void pasteSingleBlock(StructureBlockEntry entry) {
         Block destination = world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ());
-        Material newMaterial = entry.block().blockData().getMaterial();
+        org.bukkit.block.data.BlockData newBlockData = entry.block().blockData();
+        Material newMaterial = newBlockData.getMaterial();
 
         // Barrier rule: barriers protect existing terrain, do not place
         if (newMaterial == Material.BARRIER) {
             return;
         }
 
+        Material currentType = destination.getType();
         // Air optimization: if both are air, skip
-        if (newMaterial.isAir() && destination.getType().isAir()) {
+        if (newMaterial.isAir() && currentType.isAir()) {
             return;
         }
 
         // Bedrock rule: bedrock becomes the pedestal material
         if (newMaterial == Material.BEDROCK) {
-            if (!destination.getType().isSolid()) {
+            if (!currentType.isSolid()) {
                 boolean isGround = !world.getBlockAt(entry.worldX(), entry.worldY() + 1, entry.worldZ()).getType().isSolid();
                 Material pedestal = pedestalMaterialProvider != null ? pedestalMaterialProvider.apply(isGround) : Material.COBBLESTONE;
-                destination.setType(pedestal, false);
+                if (currentType != pedestal) {
+                    destination.setType(pedestal, false);
+                }
             }
             return;
         }
@@ -146,47 +243,42 @@ public final class ChunkPasteTask implements Runnable {
         // Special marker sign rule: marker signs turn into AIR, then spawn their target
         if (entry.block().isSign()) {
             if (isMarkerSign(entry.block().parsedSign())) {
-                destination.setType(Material.AIR, false);
+                if (!currentType.isAir()) {
+                    destination.setType(Material.AIR, false);
+                }
                 return;
             }
             // Empty standing sign rule (Plan A): standing signs without any text are forgotten markers, clear to AIR
             if (entry.block().parsedSign() != null && !entry.block().parsedSign().hasText()
                     && !newMaterial.name().contains("WALL")) {
-                destination.setType(Material.AIR, false);
+                if (!currentType.isAir()) {
+                    destination.setType(Material.AIR, false);
+                }
                 return;
             }
         }
 
-        // Normal block placement without physics
-        destination.setBlockData(entry.block().blockData(), false);
-    }
-
-    private void postProcessChunk() {
-        for (StructureBlockEntry entry : blocks) {
-            Block destination = world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ());
-            StructureBlock structBlock = entry.block();
-
-            // Handle signs
-            if (structBlock.isSign()) {
-                SignTextParser.ParsedSign sign = structBlock.parsedSign();
-                if (isMarkerSign(sign)) {
-                    handleMarkerSign(entry, sign);
-                } else if (sign != null && !sign.hasText() && !structBlock.blockData().getMaterial().name().contains("WALL")) {
-                    destination.setType(Material.AIR, false);
-                } else {
-                    restoreNormalSign(destination, sign);
-                }
-            }
-
-            // Handle containers (chests & barrels)
-            if (destination.getState() instanceof Container container) {
-                fillContainer(container, entry);
-            }
+        // Skip redundant block data writes to avoid unnecessary chunk dirtying
+        if (currentType == newMaterial && destination.getBlockData().equals(newBlockData)) {
+            return;
         }
 
-        // Spawn entities
-        for (StructureEntityEntry entityEntry : entities) {
-            spawnEntity(entityEntry);
+        // Normal block placement without physics
+        destination.setBlockData(newBlockData, false);
+    }
+
+    private void processSignEntry(StructureBlockEntry entry) {
+        Block destination = world.getBlockAt(entry.worldX(), entry.worldY(), entry.worldZ());
+        StructureBlock structBlock = entry.block();
+        SignTextParser.ParsedSign sign = structBlock.parsedSign();
+        if (isMarkerSign(sign)) {
+            handleMarkerSign(entry, sign);
+        } else if (sign != null && !sign.hasText() && !structBlock.blockData().getMaterial().name().contains("WALL")) {
+            if (!destination.getType().isAir()) {
+                destination.setType(Material.AIR, false);
+            }
+        } else {
+            restoreNormalSign(destination, sign);
         }
     }
 
@@ -292,10 +384,12 @@ public final class ChunkPasteTask implements Runnable {
             // [chest] & [trapped_chest]
             if (lower.contains("[chest]")) {
                 world.getBlockAt(bx, by, bz).setType(Material.CHEST, false);
+                containerEntries.add(entry);
                 return;
             }
             if (lower.contains("[trapped_chest]")) {
                 world.getBlockAt(bx, by, bz).setType(Material.TRAPPED_CHEST, false);
+                containerEntries.add(entry);
                 return;
             }
         }
