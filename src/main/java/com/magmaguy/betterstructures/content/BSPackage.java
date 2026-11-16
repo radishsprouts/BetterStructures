@@ -22,6 +22,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import com.magmaguy.magmacore.nightbreak.NightbreakAccount;
 import com.magmaguy.magmacore.nightbreak.NightbreakContentManager;
+import com.magmaguy.magmacore.util.ChatColorConverter;
 
 public class BSPackage extends AbstractNightbreakContentPackage {
     @Getter
@@ -117,36 +118,36 @@ public class BSPackage extends AbstractNightbreakContentPackage {
         }
 
         String slug = getNightbreakSlug();
+        String downloadLink = getDownloadLink();
+        if (downloadLink == null || downloadLink.isEmpty()) {
+            downloadLink = getContentPageUrl();
+        }
+
         if (slug == null || slug.isEmpty()) {
-            String downloadLink = getDownloadLink();
-            if (downloadLink == null || downloadLink.isEmpty()) {
-                downloadLink = getContentPageUrl();
-            }
-            NightbreakSetupMenuHelper.sendManualDownloadMessage(player,
-                    downloadLink,
-                    getManualImportsFolderName(),
-                    getManualReloadCommand());
+            sendDownloadInstructions(player, downloadLink);
             return;
         }
 
         if (!NightbreakAccount.hasToken()) {
-            NightbreakSetupMenuHelper.sendNoTokenPrompt(player, getPluginDisplayName(), getContentPageUrl());
+            sendDownloadInstructions(player, downloadLink);
             return;
         }
 
         if (NightbreakContentManager.isKnownUnpublished(slug)) {
-            Logger.sendSimpleMessage(player, "&c[Nightbreak] " + getDisplayName() + " is not yet published.");
+            player.sendMessage(ChatColorConverter.convert("&c[BetterStructures] &f" + getDisplayName() + " はまだ公開されていません。"));
             return;
         }
 
-        Logger.sendSimpleMessage(player, "&7Starting download for &a" + getDisplayName() + "&7...");
+        player.sendMessage(ChatColorConverter.convert("&2[BetterStructures] &7ダウンロードを開始します: &a" + getDisplayName() + "&7..."));
 
+        final String finalDownloadLink = downloadLink;
         PlatformScheduler.runAsync(() -> {
             NightbreakAccount account = NightbreakAccount.getInstance();
             if (account == null) {
                 PlatformScheduler.runEntity(player, () -> {
                     if (player.isOnline()) {
-                        Logger.sendSimpleMessage(player, "&c[Nightbreak] NightbreakAccount is not initialized.");
+                        player.sendMessage(ChatColorConverter.convert("&c[BetterStructures] NightbreakAccount が初期化されていません。手動でダウンロードしてください："));
+                        player.sendMessage(ChatColorConverter.convert("&9&n" + finalDownloadLink));
                     }
                 });
                 return;
@@ -159,9 +160,10 @@ public class BSPackage extends AbstractNightbreakContentPackage {
                 PlatformScheduler.runEntity(player, () -> {
                     if (!player.isOnline()) return;
                     if (NightbreakAccount.hasAuthFailure()) {
-                        NightbreakSetupMenuHelper.sendTokenUpdatePrompt(player, getOwnerPlugin().getName());
+                        player.sendMessage(ChatColorConverter.convert("&c[BetterStructures] Nightbreakアカウントの認証が切れています。/nightbreaklogin を再実行してください。"));
                     } else {
-                        Logger.sendSimpleMessage(player, "&cFailed to contact Nightbreak for access information.");
+                        player.sendMessage(ChatColorConverter.convert("&c[BetterStructures] Nightbreakサーバーへの接続に失敗しました。手動でダウンロードしてください："));
+                        player.sendMessage(ChatColorConverter.convert("&9&n" + finalDownloadLink));
                     }
                 });
                 return;
@@ -193,7 +195,7 @@ public class BSPackage extends AbstractNightbreakContentPackage {
                         int percent = (int) ((readBytes * 100) / totalBytes);
                         PlatformScheduler.runEntity(player, () -> {
                             if (player.isOnline()) {
-                                Logger.sendSimpleMessage(player, "&7Downloading &a" + getDisplayName() + "&7: &e" + percent + "%");
+                                player.sendMessage(ChatColorConverter.convert("&2[BetterStructures] &7ダウンロード中: &a" + getDisplayName() + " &e" + percent + "%"));
                             }
                         });
                     }
@@ -204,7 +206,8 @@ public class BSPackage extends AbstractNightbreakContentPackage {
                     Files.deleteIfExists(tempFile);
                     PlatformScheduler.runEntity(player, () -> {
                         if (player.isOnline()) {
-                            Logger.sendSimpleMessage(player, "&c[Nightbreak] Download failed. Please try again later.");
+                            player.sendMessage(ChatColorConverter.convert("&c[BetterStructures] ダウンロードに失敗しました。以下のリンクから手動でダウンロードしてください："));
+                            player.sendMessage(ChatColorConverter.convert("&9&n" + finalDownloadLink));
                         }
                     });
                     return;
@@ -215,7 +218,7 @@ public class BSPackage extends AbstractNightbreakContentPackage {
 
                 PlatformScheduler.runEntity(player, () -> {
                     if (player.isOnline()) {
-                        Logger.sendSimpleMessage(player, "&a[Nightbreak] Download complete! File saved to imports folder.");
+                        player.sendMessage(ChatColorConverter.convert("&2[BetterStructures] &aダウンロード完了！ ファイルを配置しました。反映中..."));
                     }
                     enableAfterDownload().whenComplete((v, t) -> {
                         PlatformScheduler.runEntity(player, () -> {
@@ -237,11 +240,38 @@ public class BSPackage extends AbstractNightbreakContentPackage {
                 }
                 PlatformScheduler.runEntity(player, () -> {
                     if (player.isOnline()) {
-                        Logger.sendSimpleMessage(player, "&c[Nightbreak] Download failed with error: " + e.getMessage());
+                        player.sendMessage(ChatColorConverter.convert("&c[BetterStructures] ダウンロード中にエラーが発生しました: " + e.getMessage()));
+                        player.sendMessage(ChatColorConverter.convert("&7手動ダウンロードリンク: &9&n" + finalDownloadLink));
                     }
                 });
             }
         });
+    }
+
+    private void sendDownloadInstructions(Player player, String downloadLink) {
+        player.sendMessage(ChatColorConverter.convert("&8&m-----------------------------------------------------"));
+        player.sendMessage(ChatColorConverter.convert("&2[BetterStructures] &a" + getDisplayName() + " &7のダウンロード案内:"));
+        player.sendMessage(ChatColorConverter.convert("&fこのパッケージは &a無料 &fでご利用いただけます！"));
+        player.sendMessage(ChatColorConverter.convert(""));
+        player.sendMessage(ChatColorConverter.convert("&6【方法1: ゲーム内ワンクリック自動ダウンロード】"));
+        player.sendMessage(ChatColorConverter.convert("&7・コマンド &a/nightbreaklogin &7を実行してサーバーを連携してください（無料・1分）。"));
+        player.sendMessage(ChatColorConverter.convert("&7・連携後はメニューからクリックするだけで自動ダウンロードされます。"));
+        player.sendMessage(ChatColorConverter.convert(""));
+        player.sendMessage(ChatColorConverter.convert("&6【方法2: ログイン不要で手動ダウンロード】"));
+        player.sendMessage(ChatColorConverter.convert("&7・ブラウザで以下のURLを開いて zip をダウンロードしてください："));
+        player.sendMessage(ChatColorConverter.convert("&9&n" + downloadLink));
+        player.sendMessage(ChatColorConverter.convert("&7・ダウンロードしたファイルを &eplugins/BetterStructures/imports/ &7に配置してください。"));
+        player.sendMessage(ChatColorConverter.convert("&7・配置後、&a/bs reload &7を実行すると自動的に読み込まれます。"));
+        player.sendMessage(ChatColorConverter.convert("&8&m-----------------------------------------------------"));
+
+        try {
+            NightbreakSetupMenuHelper.sendLinkCommand(player, "&7Step 1: サーバーを連携する ");
+            NightbreakSetupMenuHelper.sendManualDownloadMessage(player,
+                    downloadLink,
+                    getManualImportsFolderName(),
+                    getManualReloadCommand());
+        } catch (Throwable ignored) {
+        }
     }
 
     private File getSpecificContentFolder() {
@@ -284,7 +314,7 @@ public class BSPackage extends AbstractNightbreakContentPackage {
     @Override
     protected void onDownloadStateSaved(Player player) {
         if (player.isOnline()) {
-            Logger.sendSimpleMessage(player, "&aReloading BetterStructures so the new content is picked up...");
+            player.sendMessage(ChatColorConverter.convert("&2[BetterStructures] &a新しいコンテンツを読み込むためリロードしています..."));
         }
         ReloadCommand.reload(player);
     }
