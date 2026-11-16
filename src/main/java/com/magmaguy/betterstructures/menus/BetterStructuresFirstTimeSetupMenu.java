@@ -5,7 +5,8 @@ import com.magmaguy.betterstructures.MetadataHandler;
 import com.magmaguy.betterstructures.commands.ReloadCommand;
 import com.magmaguy.betterstructures.config.DefaultConfig;
 import com.magmaguy.betterstructures.config.schematics.SchematicConfig;
-import com.magmaguy.magmacore.menus.FirstTimeSetupMenu;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
+import com.magmaguy.magmacore.menus.AdvancedMenu;
 import com.magmaguy.magmacore.menus.MenuButton;
 import com.magmaguy.magmacore.nightbreak.NightbreakAccount;
 import com.magmaguy.magmacore.nightbreak.NightbreakFirstTimeSetupSpec;
@@ -16,7 +17,6 @@ import com.magmaguy.magmacore.util.SpigotMessage;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
-import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.List;
 
@@ -29,13 +29,15 @@ public class BetterStructuresFirstTimeSetupMenu {
 
     public static void createMenu(Player player) {
         if (BetterStructures.rejectContentCommandDuringReload(player)) return;
-        new FirstTimeSetupMenu(
-                (JavaPlugin) MetadataHandler.PLUGIN,
-                player,
-                "&2BetterStructures",
-                "&6Guided content setup",
-                createInfoItem(),
-                List.of(createRecommendedItem(), createManualItem(), createSkipItem()));
+        PlatformScheduler.runEntity(player, () -> {
+            if (!player.isOnline()) return;
+            AdvancedMenu advancedMenu = new AdvancedMenu(player, 27);
+            advancedMenu.addAdvancedMenuItem(4, createInfoItem());
+            advancedMenu.addAdvancedMenuItem(11, createRecommendedItem());
+            advancedMenu.addAdvancedMenuItem(15, createManualItem());
+            advancedMenu.addAdvancedMenuItem(13, createSkipItem());
+            advancedMenu.openInventory(player);
+        });
     }
 
     private static MenuButton createInfoItem() {
