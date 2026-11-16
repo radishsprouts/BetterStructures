@@ -83,10 +83,42 @@ public class BetterStructuresFirstTimeSetupMenu {
             public void onClick(Player player) {
                 player.closeInventory();
                 DefaultConfig.toggleSetupDone(true);
-                // Starts the browser link right away when this admin may run /nightbreaklogin.
-                NightbreakSetupMenuHelper.sendRecommendedSetupInstructions(player, SETUP_SPEC);
+                if (PlatformScheduler.isFolia()) {
+                    sendRecommendedSetupInstructionsSafely(player);
+                } else {
+                    NightbreakSetupMenuHelper.sendRecommendedSetupInstructions(player, SETUP_SPEC);
+                }
             }
         };
+    }
+
+    private static void sendRecommendedSetupInstructionsSafely(Player player) {
+        Logger.sendSimpleMessage(player, "&8&m-----------------------------------------------------");
+        Logger.sendSimpleMessage(player, "&2BetterStructures &6Recommended content setup:");
+        if (NightbreakAccount.hasToken()) {
+            Logger.sendSimpleMessage(player, "&2Nightbreak account: &aconnected");
+            player.spigot().sendMessage(
+                    SpigotMessage.simpleMessage("&7Open the setup menu with "),
+                    SpigotMessage.commandHoverMessage("&a/bs setup",
+                            "&7Click to open the BetterStructures setup menu.",
+                            "/bs setup"));
+        } else {
+            NightbreakSetupMenuHelper.sendLinkCommand(player, "&7Step 1: link this server with ");
+            player.spigot().sendMessage(
+                    SpigotMessage.simpleMessage("&7Step 2: open the setup menu with "),
+                    SpigotMessage.commandHoverMessage("&a/bs setup",
+                            "&7Click to open the BetterStructures setup menu.",
+                            "/bs setup"));
+        }
+        player.spigot().sendMessage(
+                SpigotMessage.simpleMessage("&7Recommended plugins: "),
+                SpigotMessage.commandHoverMessage("&a/bs recommendedplugins",
+                        "&7Click to see plugins that work well with BetterStructures.",
+                        "/bs recommendedplugins"));
+        sendLink(player, "&2Support Discord: ", "&9&nhttps://discord.gg/eSxvPbWYy4",
+                "&7Click to open the BetterStructures support Discord.",
+                "https://discord.gg/eSxvPbWYy4");
+        Logger.sendSimpleMessage(player, "&8&m-----------------------------------------------------");
     }
 
     private static MenuButton createManualItem() {

@@ -48,11 +48,13 @@ public class BetterStructuresSetupMenu {
                     .appendPackage(new DownloadAllContentPackage<>(BetterStructures::availablePackages,
                             "BetterStructures",
                             "https://nightbreak.io/plugin/betterstructures/",
-                            "bs downloadall"))
-                    .addFilter(Material.GRASS_BLOCK, "Structure Packs",
-                            (Predicate<BSPackage>) BetterStructuresSetupMenu::filterStructures)
-                    .addFilter(Material.DEEPSLATE_BRICKS, "Module Packs",
-                            (Predicate<BSPackage>) BetterStructuresSetupMenu::filterModules);
+                            "bs downloadall"));
+            if (!PlatformScheduler.isFolia()) {
+                builder.addFilter(Material.GRASS_BLOCK, "Structure Packs",
+                                (Predicate<BSPackage>) BetterStructuresSetupMenu::filterStructures)
+                        .addFilter(Material.DEEPSLATE_BRICKS, "Module Packs",
+                                (Predicate<BSPackage>) BetterStructuresSetupMenu::filterModules);
+            }
             NightbreakSetupControls.prependStandardControls(builder, (JavaPlugin) MetadataHandler.PLUGIN, BetterStructures.NIGHTBREAK_PLUGIN_SPEC)
                     .open();
         });

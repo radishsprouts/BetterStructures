@@ -3,7 +3,9 @@ package com.magmaguy.betterstructures.content;
 import com.magmaguy.betterstructures.MetadataHandler;
 import com.magmaguy.betterstructures.commands.ReloadCommand;
 import com.magmaguy.betterstructures.config.contentpackages.ContentPackageConfigFields;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.magmacore.nightbreak.AbstractNightbreakContentPackage;
+import com.magmaguy.magmacore.nightbreak.NightbreakSetupMenuHelper;
 import com.magmaguy.magmacore.util.Logger;
 import lombok.Getter;
 import org.bukkit.entity.Player;
@@ -72,6 +74,49 @@ public class BSPackage extends AbstractNightbreakContentPackage {
 
     private CompletableFuture<Void> toggleContentState(boolean enabled) {
         return contentPackageConfigFields.setEnabledAndSave(enabled);
+    }
+
+    @Override
+    protected void handleStateSave(Player player, CompletableFuture<Void> future, Runnable onSuccess, String errorMessage) {
+        if (!PlatformScheduler.isFolia()) {
+            super.handleStateSave(player, future, onSuccess, errorMessage);
+            return;
+        }
+
+        future.whenComplete((v, t) -> {
+            PlatformScheduler.runEntity(player, () -> {
+                if (t != null) {
+                    Logger.warn("Failed to update content package state: " + t.getMessage());
+                    if (player.isOnline()) {
+                        Logger.sendSimpleMessage(player, errorMessage);
+                    }
+                } else {
+                    onSuccess.run();
+                }
+            });
+        });
+    }
+
+    @Override
+    protected void doDownload(Player player) {
+        if (!PlatformScheduler.isFolia()) {
+            super.doDownload(player);
+            return;
+        }
+
+        player.closeInventory();
+        String downloadLink = getDownloadLink();
+        if (downloadLink == null || downloadLink.isEmpty()) {
+            NightbreakSetupMenuHelper.sendManualDownloadMessage(player,
+                    "https://nightbreak.io/plugin/betterstructures/",
+                    getManualImportsFolderName(),
+                    getManualReloadCommand());
+            return;
+        }
+        NightbreakSetupMenuHelper.sendManualDownloadMessage(player,
+                downloadLink,
+                getManualImportsFolderName(),
+                getManualReloadCommand());
     }
 
     private File getSpecificContentFolder() {

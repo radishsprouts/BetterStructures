@@ -372,6 +372,22 @@ public final class BetterStructures extends JavaPlugin {
         ModulesContainer.shutdown();
         WFCGenerator.shutdown();
 
+        if (PlatformScheduler.isFolia()) {
+            PlatformScheduler.runAsync(() -> {
+                try {
+                    loadContent(null);
+                    BSPackageRefresher.reset();
+                    ComponentsConfigFolder.initialize();
+                    PlatformScheduler.runGlobal(() -> finishImportedContentReload(true));
+                } catch (Throwable failure) {
+                    Logger.warn("Failed to reload BetterStructures content asynchronously.");
+                    failure.printStackTrace();
+                    PlatformScheduler.runGlobal(() -> finishImportedContentReload(false));
+                }
+            });
+            return;
+        }
+
         MagmaCore.startInitialization(this,
                 new PluginInitializationConfig("BetterStructures", "betterstructures.*", 10, List.of()),
                 this::loadContent,
