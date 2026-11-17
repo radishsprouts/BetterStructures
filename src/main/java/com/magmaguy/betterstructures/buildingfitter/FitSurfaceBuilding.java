@@ -1,113 +1,15 @@
 package com.magmaguy.betterstructures.buildingfitter;
 
-import com.magmaguy.betterstructures.buildingfitter.util.TerrainAdequacy;
-import com.magmaguy.betterstructures.buildingfitter.util.Topology;
 import com.magmaguy.betterstructures.config.generators.GeneratorConfigFields;
+import com.magmaguy.betterstructures.scan.PedestalSampler;
 import com.magmaguy.betterstructures.schematics.SchematicContainer;
-import com.magmaguy.betterstructures.util.WorldEditUtils;
-import org.bukkit.Chunk;
 import org.bukkit.Location;
-import org.bukkit.World;
 import org.bukkit.util.Vector;
 
+/** 地表の構造物の配置。走査は {@code scan/} が行う。 */
 public class FitSurfaceBuilding extends FitAnything {
-
-    //For commands
-    public FitSurfaceBuilding(Chunk chunk, SchematicContainer schematicContainer) {
-        super(schematicContainer);
-        super.structureType = GeneratorConfigFields.StructureType.SURFACE;
-        this.schematicContainer = schematicContainer;
-        this.schematicClipboard = schematicContainer.getClipboard();
-        scan(chunk);
+    public FitSurfaceBuilding(SchematicContainer schematicContainer, Location location, Vector schematicOffset,
+                              PedestalSampler.Samples pedestalSamples) {
+        super(schematicContainer, GeneratorConfigFields.StructureType.SURFACE, location, schematicOffset, pedestalSamples);
     }
-
-    public FitSurfaceBuilding(Chunk chunk) {
-        super();
-        super.structureType = GeneratorConfigFields.StructureType.SURFACE;
-        scan(chunk);
-    }
-
-    private void scan(Chunk chunk) {
-        //Note about the adjustments:
-        //The 8 offset on x and y is to center the anchor on the chunk
-        Location originalLocation = new Location(chunk.getWorld(), chunk.getX() * 16D, 0, chunk.getZ() * 16D).add(new Vector(8, 0, 8));
-        originalLocation.setY(originalLocation.getWorld().getHighestBlockYAt(originalLocation));
-        randomizeSchematicContainer(originalLocation, GeneratorConfigFields.StructureType.SURFACE);
-        if (schematicClipboard == null && (schematicContainer == null || schematicContainer.getStructureSchematic() == null)) {
-            //Bukkit.getLogger().info("Did not spawn structure in biome " + originalLocation.getBlock().getBiome() + " because no valid schematics exist for it.");
-            return;
-        }
-        if (schematicOffset == null) {
-            if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
-                schematicOffset = new Vector(
-                        schematicContainer.getStructureSchematic().getOffsetX(),
-                        schematicContainer.getStructureSchematic().getOffsetY(),
-                        schematicContainer.getStructureSchematic().getOffsetZ()
-                );
-            } else if (schematicClipboard != null) {
-                schematicOffset = WorldEditUtils.getSchematicOffset(schematicClipboard);
-            }
-        }
-        anchor = originalLocation;
-        evaluate();
-    }
-
-    @Override
-    protected void evaluate() {
-        chunkScan(anchor, 0, 0);
-        if (highestScore < 50)
-            for (int chunkX = -searchRadius; chunkX < searchRadius + 1; chunkX++) {
-                for (int chunkZ = -searchRadius; chunkZ < searchRadius + 1; chunkZ++) {
-                    //Relief measure: instead of doing a 3x3 grid, this does a "+" shaped  pattern search - may want to remove this some day, if not optimal
-                    if (chunkX == -1 && chunkZ == -1 ||
-                            chunkX == 1 && chunkZ == 1 ||
-                            chunkX == -1 && chunkZ == 1 ||
-                            chunkX == 1 && chunkZ == -1) continue;
-                    chunkScan(anchor, chunkX, chunkZ);
-                    if (highestScore > 50) break;
-                }
-                if (highestScore > 50) break;
-            }
-
-        if (location == null) {
-            return;
-        }
-
-        //Bukkit.broadcastMessage("Fit with score = " + highestScore);
-
-        super.paste(location);
-    }
-
-    private void chunkScan(Location originalLocation, int chunkX, int chunkZ) {
-        Location iteratedLocation = originalLocation.clone().add(new Vector(chunkX * 16, 0, chunkZ * 16));
-
-        if (originalLocation.getWorld().getEnvironment().equals(World.Environment.NETHER)) startingScore = 200;
-        double score;
-        if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
-            score = Topology.scan(startingScore, scanStep, schematicContainer.getStructureSchematic(), iteratedLocation, schematicOffset);
-        } else {
-            score = Topology.scan(startingScore, scanStep, schematicClipboard, iteratedLocation, schematicOffset);
-        }
-
-        //Continue to the next scan in case of poor fit
-        if (score == 0) {
-            //Bukkit.getLogger().info("Exited because of scoring of individual points");
-            return;
-        }
-
-        double adequacyScore;
-        if (schematicContainer != null && schematicContainer.getStructureSchematic() != null) {
-            adequacyScore = TerrainAdequacy.scan(scanStep, schematicContainer.getStructureSchematic(), iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.SURFACE);
-        } else {
-            adequacyScore = TerrainAdequacy.scan(scanStep, schematicClipboard, iteratedLocation, schematicOffset, TerrainAdequacy.ScanType.SURFACE);
-        }
-        //Adequacy has an impact of 50% on the score
-        score += (.5 * adequacyScore);
-
-        if (score > highestScore) {
-            highestScore = score;
-            location = iteratedLocation;
-        }
-    }
-
 }
