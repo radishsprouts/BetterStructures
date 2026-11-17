@@ -163,21 +163,25 @@ public final class ModulePasting {
         ModulesConfigFields config = snapshot.config();
         return PasteRequest.builder(world, snapshot.location(), prepared, markerHandler)
                 .schematicOffset(new Vector(0, 0, 0))
-                .schematicName(snapshot.filename())
+                // 図面名には、停止をまたぐ再開で作り直せるよう、ダンジョンの設定名と接尾辞も入れる（ModuleResume）。
+                .schematicName(ModuleResume.encode(moduleGeneratorsConfigFields.getFilename(), spawnPoolSuffix, snapshot.filename()))
                 .rotationDegrees(snapshot.rotation())
-                .contents(markerHandler.contents(moduleGeneratorsConfigFields.getTreasureFile()), barrelContents(config))
+                .contents(markerHandler.contents(moduleGeneratorsConfigFields.getTreasureFile()),
+                        barrelContents(markerHandler, moduleGeneratorsConfigFields, config))
                 .bedrockReplacement(Material.STONE)
                 .windowChunks(windowChunks)
                 .announce(false)
                 .build();
     }
 
-    private ChestContents barrelContents(ModulesConfigFields config) {
-        if (!moduleGeneratorsConfigFields.isGenerateLootInBarrels()
+    /** 樽の中身。通常の貼り付けと、停止をまたぐ再開（{@link ModuleResume}）で同じ決め方を使う。 */
+    static ChestContents barrelContents(ModularMarkerHandler markerHandler, ModuleGeneratorsConfigFields generator,
+                                        ModulesConfigFields config) {
+        if (!generator.isGenerateLootInBarrels()
                 || config != null && !config.isGenerateLootInBarrels()) return null;
         String treasure = config != null && config.getBarrelTreasureFilename() != null
                 && !config.getBarrelTreasureFilename().isEmpty()
-                ? config.getBarrelTreasureFilename() : moduleGeneratorsConfigFields.getBarrelTreasureFilename();
+                ? config.getBarrelTreasureFilename() : generator.getBarrelTreasureFilename();
         return markerHandler.contents(treasure);
     }
 

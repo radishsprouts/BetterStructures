@@ -8,7 +8,7 @@ import com.magmaguy.betterstructures.integration.RegionProtectionSelector;
 import com.magmaguy.betterstructures.integration.SchematicImport;
 import com.magmaguy.betterstructures.schematic.reader.UnresolvedBlockReport;
 import com.magmaguy.betterstructures.schematics.SchematicContainer;
-import com.magmaguy.betterstructures.worldedit.WorldEditCompatibility;
+import com.magmaguy.betterstructures.integration.WorldEditCompatibility;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;

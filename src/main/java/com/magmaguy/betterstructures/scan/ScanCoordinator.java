@@ -6,6 +6,7 @@ import com.magmaguy.betterstructures.buildingfitter.util.SchematicPicker;
 import com.magmaguy.betterstructures.config.DefaultConfig;
 import com.magmaguy.betterstructures.config.generators.GeneratorConfigFields.StructureType;
 import com.magmaguy.betterstructures.paste.MarkerHandler;
+import com.magmaguy.betterstructures.paste.PasteJournal;
 import com.magmaguy.betterstructures.runtime.GenerationGovernor;
 import com.magmaguy.betterstructures.schematics.SchematicContainer;
 import com.magmaguy.betterstructures.util.PlatformScheduler;
@@ -14,8 +15,11 @@ import org.bukkit.Bukkit;
 import org.bukkit.World;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Queue;
+import java.util.Set;
+import java.util.UUID;
 import java.util.SplittableRandom;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
@@ -38,6 +42,8 @@ public final class ScanCoordinator {
 
     /** 再読み込みの間に走らせられなかった（または途中で世代が変わった）自然生成の依頼。 */
     private static final Queue<ScanRequest> deferred = new ConcurrentLinkedQueue<>();
+    /** 枠をもらって走っている自然生成の依頼（停止時の記録用）。 */
+    private static final Set<ScanRequest> inFlight = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     private static volatile Function<FitAnything, MarkerHandler> markerHandlerFactory = fit -> {
         throw new IllegalStateException("The marker handler for building pastes is not installed");
@@ -68,7 +74,50 @@ public final class ScanCoordinator {
         Object dedupeKey = request.forced() == null ? new ScanKey(request.kind(), request.chunkX(), request.chunkZ()) : null;
         GenerationGovernor.instance().submit(new GenerationGovernor.Work(
                 GenerationGovernor.Lane.SCAN, request.world().getUID(), dedupeKey, request,
-                ticket -> start(request, generation, ticket)));
+                ticket -> {
+                    // 走っている間も停止時の記録に載せるため、枠を返すまで覚えておく。
+                    if (request.forced() == null) inFlight.add(request);
+                    start(request, generation, () -> {
+                        inFlight.remove(request);
+                        ticket.release();
+                    });
+                }));
+    }
+
+    /**
+     * 停止時の記録（PasteJournal）に載せる、まだ貼り付けに渡っていない自然生成の走査の依頼
+     * （待ち・走っている・再読み込みで保留中）。{@code /bs place} の指定の図面は、その場の操作なので載せない。
+     * 呼んだスレッドは待たない。
+     */
+    public static List<PasteJournal.ScanEntry> journalEntries() {
+        Set<ScanRequest> unique = new LinkedHashSet<>(inFlight);
+        for (GenerationGovernor.Work work : GenerationGovernor.instance().pendingSnapshot(GenerationGovernor.Lane.SCAN)) {
+            if (work.payload() instanceof ScanRequest request && request.forced() == null) unique.add(request);
+        }
+        unique.addAll(deferred);
+        List<PasteJournal.ScanEntry> entries = new ArrayList<>(unique.size());
+        for (ScanRequest request : unique) {
+            if (request.forced() != null) continue;
+            entries.add(new PasteJournal.ScanEntry(request.world().getUID().toString(),
+                    request.chunkX(), request.chunkZ(), request.kind().name()));
+        }
+        return entries;
+    }
+
+    /** 前回の停止で記録された走査の依頼を戻す。世界が無い・種類が読めないものは警告して飛ばす。 */
+    public static void restore(List<PasteJournal.ScanEntry> entries) {
+        for (PasteJournal.ScanEntry entry : entries) {
+            try {
+                World world = Bukkit.getWorld(UUID.fromString(entry.worldId));
+                if (world == null) {
+                    Logger.warn("走査の記録の世界 " + entry.worldId + " が見つからないため戻せません。");
+                    continue;
+                }
+                submit(ScanRequest.natural(world, entry.chunkX, entry.chunkZ, StructureType.valueOf(entry.kind)));
+            } catch (RuntimeException e) {
+                Logger.warn("走査の記録を戻せませんでした: " + e);
+            }
+        }
     }
 
     /** 保留していた依頼を、今の世代でやり直す（再読み込みが終わった後に呼ぶ）。 */
@@ -91,6 +140,7 @@ public final class ScanCoordinator {
     /** 停止時。 */
     public static void shutdown() {
         deferred.clear();
+        inFlight.clear();
     }
 
     /** 保留中の依頼の数（試験・診断用）。 */

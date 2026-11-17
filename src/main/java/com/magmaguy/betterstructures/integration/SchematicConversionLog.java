@@ -1,4 +1,4 @@
-package com.magmaguy.betterstructures.worldedit;
+package com.magmaguy.betterstructures.integration;
 
 import com.magmaguy.magmacore.util.Logger;
 import org.apache.logging.log4j.Level;

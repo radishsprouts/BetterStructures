@@ -2,7 +2,7 @@ package com.magmaguy.betterstructures.integration;
 
 import com.magmaguy.betterstructures.integration.worldedit.WorldEditSchematicImport;
 import com.magmaguy.betterstructures.schematic.model.StructureSchematic;
-import com.magmaguy.betterstructures.worldedit.WorldEditCompatibility;
+import com.magmaguy.betterstructures.integration.WorldEditCompatibility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

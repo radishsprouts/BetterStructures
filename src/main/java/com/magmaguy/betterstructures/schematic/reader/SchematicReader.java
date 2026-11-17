@@ -227,11 +227,14 @@ public final class SchematicReader {
             }
         }
 
-        return new StructureSchematic(
+        StructureSchematic schematic = new StructureSchematic(
                 width, height, length,
                 offsetX, offsetY, offsetZ,
                 blocks, blockEntities, parsedSigns, entities
         );
+        // 図面の元の DataVersion（貼り付けの記録から図面を引き直す時などに使う）。無ければ 0（不明）。
+        schematic.setDataVersion(Math.max(0, root.getInt("DataVersion", 0)));
+        return schematic;
     }
 
     /** 名前空間が無ければ minecraft: を補って解釈する。解釈できなければ null。 */

@@ -25,6 +25,8 @@ public class SchematicContainer {
     @Getter
     private static final ArrayListMultimap<GeneratorConfigFields.StructureType, SchematicContainer> schematics = ArrayListMultimap.create();
     private static final Map<Object, String> BIOME_ID_CACHE = new ConcurrentHashMap<>();
+    /** 設定名（{@link #getConfigFilename()}）で引く。停止をまたぐ貼り付けの再開が図面を引き直すのに使う。 */
+    private static final Map<String, SchematicContainer> BY_CONFIG_FILENAME = new ConcurrentHashMap<>();
     private static volatile boolean eliteMobsAvailable;
     private static volatile boolean mythicMobsAvailable;
     @Getter
@@ -105,12 +107,20 @@ public class SchematicContainer {
                 barrelContents = schematicConfigField.getBarrelContents();
             }
         }
-        if (valid)
+        if (valid) {
             generatorConfigFields.getStructureTypes().forEach(structureType -> schematics.put(structureType, this));
+            if (configFilename != null) BY_CONFIG_FILENAME.put(configFilename, this);
+        }
+    }
+
+    /** 設定名から、使える状態の構造物を引く。無ければ null。 */
+    public static SchematicContainer findByConfigFilename(String configFilename) {
+        return configFilename == null ? null : BY_CONFIG_FILENAME.get(configFilename);
     }
 
     public static void shutdown() {
         schematics.clear();
+        BY_CONFIG_FILENAME.clear();
         BIOME_ID_CACHE.clear();
     }
 

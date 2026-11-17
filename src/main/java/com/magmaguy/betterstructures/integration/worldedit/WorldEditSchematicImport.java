@@ -3,7 +3,7 @@ package com.magmaguy.betterstructures.integration.worldedit;
 import com.magmaguy.betterstructures.integration.SchematicImport;
 import com.magmaguy.betterstructures.schematic.model.StructureSchematic;
 import com.magmaguy.betterstructures.schematic.reader.SchematicReader;
-import com.magmaguy.betterstructures.worldedit.WorldEditCompatibility;
+import com.magmaguy.betterstructures.integration.WorldEditCompatibility;
 import com.sk89q.worldedit.extent.clipboard.Clipboard;
 import com.sk89q.worldedit.extent.clipboard.io.BuiltInClipboardFormat;
 import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormat;
