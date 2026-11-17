@@ -1,148 +1,54 @@
 package com.magmaguy.betterstructures.thirdparty;
 
-import com.magmaguy.betterstructures.buildingfitter.FitAnything;
-import com.magmaguy.betterstructures.config.DefaultConfig;
+import com.magmaguy.betterstructures.integration.RegionProtectionSelector;
+import com.magmaguy.betterstructures.integration.worldguard.WorldGuardRegionProtection;
 import com.magmaguy.betterstructures.modules.NaturalDungeonReservation;
+import com.magmaguy.betterstructures.runtime.Services;
 import com.magmaguy.elitemobs.api.EliteMobDeathEvent;
-import com.magmaguy.elitemobs.mobconstructor.custombosses.CustomBossEntity;
-import com.magmaguy.elitemobs.mobconstructor.custombosses.RegionalBossEntity;
-import com.magmaguy.magmacore.util.Logger;
-import com.sk89q.worldedit.bukkit.BukkitAdapter;
-import com.sk89q.worldedit.math.BlockVector3;
-import com.sk89q.worldguard.protection.ApplicableRegionSet;
-import com.sk89q.worldguard.protection.flags.Flags;
-import com.sk89q.worldguard.protection.flags.StateFlag;
-import com.sk89q.worldguard.protection.flags.registry.FlagConflictException;
-import com.sk89q.worldguard.protection.flags.registry.FlagRegistry;
-import com.sk89q.worldguard.protection.managers.RegionManager;
-import com.sk89q.worldguard.protection.regions.ProtectedCuboidRegion;
-import com.sk89q.worldguard.protection.regions.ProtectedRegion;
-import com.sk89q.worldguard.protection.regions.RegionContainer;
-import com.sk89q.worldguard.protection.regions.RegionQuery;
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
-import org.bukkit.util.Vector;
 
+/**
+ * 従来の呼び出し元（{@code BetterStructures}・{@code FitAnything}・{@code NewChunkLoadEvent}）を
+ * 壊さないための薄い窓口。WorldGuard の型はここには無く、実体は
+ * {@code integration/worldguard/WorldGuardRegionProtection}（{@link Services#regionProtection()} 経由）。
+ *
+ * <p>リスナーとしての登録は従来どおり WorldGuard と EliteMobs が有効な時だけ（本体の onEnable）。
+ * 登録された時だけ下のハンドラーが動き、その時は WorldGuard が有効なので実体を使える。
+ *
+ * @deprecated 呼び出し元が {@link Services#regionProtection()} と
+ * {@link RegionProtectionSelector#initializeFlag()} を直接使うようになったら削除する。
+ */
+@Deprecated
 public class WorldGuard implements Listener {
-    private static StateFlag BETTERSTRUCTURES_PROTECTED = null;
-    private static final StateFlag.State allow = StateFlag.State.ALLOW;
-    private static final StateFlag.State deny = StateFlag.State.DENY;
-
 
     public static void initializeFlag() {
-        //Enable WorldGuard
-        if (Bukkit.getPluginManager().getPlugin("WorldGuard") == null)
-            return;
-
-        FlagRegistry registry = null;
-        try {
-            registry = com.sk89q.worldguard.WorldGuard.getInstance().getFlagRegistry();
-        } catch (Exception ex) {
-            Logger.warn("Something went wrong while loading WorldGuard. Are you using the right WorldGuard version?");
-            return;
-        }
-
-        if (BETTERSTRUCTURES_PROTECTED != null) {
-            Logger.info("Flag betterstructures-protect is already registered, this is normal if the plugin or server have just been reloaded.");
-            return;
-        }
-
-        Bukkit.getLogger().info("[BetterStructures] Enabling flags:");
-        try {
-            BETTERSTRUCTURES_PROTECTED = new StateFlag("betterstructures-protect", false);
-            registry.register(BETTERSTRUCTURES_PROTECTED);
-            Bukkit.getLogger().info("[BetteStructures] - betterstructures-protect");
-        } catch (FlagConflictException | IllegalStateException e) {
-            //e.printStackTrace();
-            Bukkit.getLogger().warning("[EliteMobs] Warning: flag betterstructures-protect already exists! This is normal if you've just now reloaded BetterStructures.");
-            BETTERSTRUCTURES_PROTECTED = (StateFlag) registry.get("betterstructures-protect");
-        }
-    }
-
-    /**
-     * Creates and returns a WorldGuard region, useful for API purposes
-     */
-    public static ProtectedRegion generateProtectedRegion(FitAnything fitAnything, String regionName){
-        Location lowestCorner = fitAnything.getLocation().clone().add(fitAnything.getSchematicOffset());
-        Location highestCorner = lowestCorner.clone().add(new Vector(fitAnything.getSchematicClipboard().getRegion().getWidth() - 1, fitAnything.getSchematicClipboard().getRegion().getHeight() - 1, fitAnything.getSchematicClipboard().getRegion().getLength() - 1));
-        BlockVector3 min =  BlockVector3.at(lowestCorner.getX(), lowestCorner.getY(), lowestCorner.getZ());
-        BlockVector3 max = BlockVector3.at(highestCorner.getX(), highestCorner.getY(), highestCorner.getZ());
-        return new ProtectedCuboidRegion(regionName, min, max);
+        RegionProtectionSelector.initializeFlag();
     }
 
     public static void Protect(Location lowestCorner, Location highestCorner, String bossFilename, Location spawnLocation) {
-        BlockVector3 min =  BlockVector3.at(lowestCorner.getX(), lowestCorner.getY(), lowestCorner.getZ());
-        BlockVector3 max = BlockVector3.at(highestCorner.getX(), highestCorner.getY(), highestCorner.getZ());
-        Protect(min, max, bossFilename, spawnLocation);
-    }
-
-    public static void Protect(BlockVector3 corner1, BlockVector3 corner2, String bossFilename, Location spawnLocation) {
-        RegionContainer regionContainer = com.sk89q.worldguard.WorldGuard.getInstance().getPlatform().getRegionContainer();
-        RegionManager regionManager = regionContainer.get(BukkitAdapter.adapt(spawnLocation.getWorld()));
-        BlockVector3 min = corner1;
-        BlockVector3 max = corner2;
-        ProtectedRegion region = new ProtectedCuboidRegion(regionIDGenerator(bossFilename, spawnLocation), min, max);
-        region.setFlag(BETTERSTRUCTURES_PROTECTED, allow);
-        region.setFlag(Flags.PASSTHROUGH, allow);
-        regionManager.addRegion(region);
-    }
-
-    public static void Unprotect(CustomBossEntity customBossEntity) {
-        if (!customBossEntity.getCustomBossesConfigFields().isRemoveAfterDeath()) return;
-        ProtectedRegion protectedRegion = com.sk89q.worldguard.WorldGuard.getInstance().getPlatform().getRegionContainer()
-                .get(BukkitAdapter.adapt(customBossEntity.getLocation().getWorld())).getRegion(
-                        regionIDGenerator(
-                                customBossEntity.getCustomBossesConfigFields().getFilename(),
-                                customBossEntity.getSpawnLocation()));
-        if (protectedRegion == null) return;
-        com.sk89q.worldguard.WorldGuard.getInstance().getPlatform().getRegionContainer()
-                .get(BukkitAdapter.adapt(customBossEntity.getLocation().getWorld())).removeRegion(regionIDGenerator(
-                        customBossEntity.getCustomBossesConfigFields().getFilename(),
-                        customBossEntity.getSpawnLocation()));
+        Services.regionProtection().protectBossArena(lowestCorner, highestCorner, bossFilename, spawnLocation);
     }
 
     public static boolean checkArea(Location location, Player player) {
-        com.sk89q.worldedit.util.Location wgLocation = BukkitAdapter.adapt(location);
-        RegionContainer container = com.sk89q.worldguard.WorldGuard.getInstance().getPlatform().getRegionContainer();
-        RegionQuery query = container.createQuery();
-        ApplicableRegionSet set = query.getApplicableRegions(wgLocation);
-        if (set.testState(null, BETTERSTRUCTURES_PROTECTED)) {
-            player.sendMessage(DefaultConfig.getRegionProtectedMessage());
-            return true;
-        }
-        return false;
+        return Services.regionProtection().denyEdit(location, player);
     }
 
-    /** Returns true when a natural modular-generation footprint overlaps a named region. */
-    public static boolean hasRegionOverlap(
-            org.bukkit.World world,
-            NaturalDungeonReservation.BlockBounds bounds) {
-        RegionContainer regionContainer = com.sk89q.worldguard.WorldGuard.getInstance()
-                .getPlatform().getRegionContainer();
-        RegionManager regionManager = regionContainer.get(BukkitAdapter.adapt(world));
-        if (regionManager == null) return true;
-
-        ProtectedRegion probe = new ProtectedCuboidRegion(
-                "__betterstructures_natural_generation_probe__",
-                BlockVector3.at(bounds.minBlockX(), world.getMinHeight(), bounds.minBlockZ()),
-                BlockVector3.at(bounds.maxBlockX(), world.getMaxHeight() - 1, bounds.maxBlockZ()));
-        for (ProtectedRegion region : regionManager.getApplicableRegions(probe))
-            if (!ProtectedRegion.GLOBAL_REGION.equals(region.getId())) return true;
-        return false;
-    }
-
-    private static String regionIDGenerator(String bossFilename, Location spawnLocation) {
-        return "betterstructures_autoprotected_" + bossFilename.replace(".yml", "") + "_" + spawnLocation.getBlockX() + "_" + spawnLocation.getBlockY() + "_" + spawnLocation.getBlockZ();
+    /** 自然生成のダンジョンの範囲に、名前のある既存の領域が重なるか。 */
+    public static boolean hasRegionOverlap(org.bukkit.World world, NaturalDungeonReservation.BlockBounds bounds) {
+        return Services.regionProtection().overlapsRegion(
+                world, bounds.minBlockX(), bounds.minBlockZ(), bounds.maxBlockX(), bounds.maxBlockZ());
     }
 
     @EventHandler
     public void onEliteDeath(EliteMobDeathEvent event) {
-        if (event.getEliteEntity() instanceof RegionalBossEntity) Unprotect((CustomBossEntity) event.getEliteEntity());
+        if (Services.regionProtection() instanceof WorldGuardRegionProtection protection) {
+            protection.handleEliteDeath(event);
+        }
     }
 
     @EventHandler(ignoreCancelled = true)

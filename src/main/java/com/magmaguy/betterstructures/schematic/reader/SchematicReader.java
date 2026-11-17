@@ -1,5 +1,6 @@
 package com.magmaguy.betterstructures.schematic.reader;
 
+import com.magmaguy.betterstructures.integration.SchematicImport;
 import com.magmaguy.betterstructures.schematic.model.StructureEntity;
 import com.magmaguy.betterstructures.schematic.model.StructureSchematic;
 import com.magmaguy.betterstructures.schematic.nbt.SimpleNbt;
@@ -24,16 +25,30 @@ public final class SchematicReader {
     }
 
     public static StructureSchematic read(File file) throws IOException {
+        return read(file, SchematicImport.ConversionReport.NONE);
+    }
+
+    public static StructureSchematic read(File file, SchematicImport.ConversionReport report) throws IOException {
         SimpleNbt.CompoundTag root = SimpleNbt.readFile(file);
-        return parse(root, file.getName());
+        return parse(root, file.getName(), report);
     }
 
     public static StructureSchematic read(InputStream inputStream, String schematicName) throws IOException {
+        return read(inputStream, schematicName, SchematicImport.ConversionReport.NONE);
+    }
+
+    public static StructureSchematic read(InputStream inputStream, String schematicName,
+                                          SchematicImport.ConversionReport report) throws IOException {
         SimpleNbt.CompoundTag root = SimpleNbt.read(inputStream);
-        return parse(root, schematicName);
+        return parse(root, schematicName, report);
     }
 
     public static StructureSchematic parse(SimpleNbt.CompoundTag root, String schematicName) throws IOException {
+        return parse(root, schematicName, SchematicImport.ConversionReport.NONE);
+    }
+
+    public static StructureSchematic parse(SimpleNbt.CompoundTag root, String schematicName,
+                                           SchematicImport.ConversionReport report) throws IOException {
         if (root.containsKey("Schematic")) {
             SimpleNbt.CompoundTag schematicCompound = root.getCompound("Schematic");
             if (schematicCompound != null) {
@@ -79,27 +94,33 @@ public final class SchematicReader {
         // 2. Decode Palette to Bukkit BlockData
         Map<Integer, BlockData> paletteMap = new HashMap<>(paletteTag.keySet().size());
         BlockData airBlockData = Material.AIR.createBlockData();
+        Map<Integer, String> unresolvedStates = new HashMap<>();
 
         for (String stateString : paletteTag.keySet()) {
             int paletteId = paletteTag.getInt(stateString, -1);
             if (paletteId < 0) continue;
 
-            BlockData blockData;
-            try {
-                blockData = Bukkit.createBlockData(stateString);
-            } catch (Exception e) {
-                // If namespace is missing, try adding "minecraft:"
-                if (!stateString.contains(":")) {
-                    try {
-                        blockData = Bukkit.createBlockData("minecraft:" + stateString);
-                    } catch (Exception ignored) {
-                        blockData = airBlockData;
-                    }
-                } else {
-                    blockData = airBlockData;
-                }
+            BlockData blockData = createBlockDataOrNull(stateString);
+            if (blockData == null) {
+                unresolvedStates.put(paletteId, stateString);
+                continue;
             }
             paletteMap.put(paletteId, blockData);
+        }
+
+        // 古い版の図面: 直接解釈できなかった項目だけを、元の DataVersion から今の版へ変換する
+        if (!unresolvedStates.isEmpty()) {
+            int dataVersion = root.getInt("DataVersion", -1);
+            Map<String, BlockData> upgraded = PaletteUpgrader.upgrade(dataVersion, unresolvedStates.values());
+            Iterator<Map.Entry<Integer, String>> iterator = unresolvedStates.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<Integer, String> entry = iterator.next();
+                BlockData data = upgraded.get(entry.getValue());
+                if (data != null) {
+                    paletteMap.put(entry.getKey(), data);
+                    iterator.remove();
+                }
+            }
         }
 
         // 3. Decode BlockData bytes (VarInt array) into BlockData[width * height * length]
@@ -125,6 +146,10 @@ public final class SchematicReader {
 
             BlockData data = paletteMap.get(paletteId);
             blocks[blockIndex] = data != null ? data : airBlockData;
+            if (data == null) {
+                String unresolved = unresolvedStates.get(paletteId);
+                if (unresolved != null) report.unresolvedBlock(schematicName, blockName(unresolved));
+            }
         }
 
         // 4. Decode Block Entities
@@ -207,6 +232,26 @@ public final class SchematicReader {
                 offsetX, offsetY, offsetZ,
                 blocks, blockEntities, parsedSigns, entities
         );
+    }
+
+    /** 名前空間が無ければ minecraft: を補って解釈する。解釈できなければ null。 */
+    private static BlockData createBlockDataOrNull(String stateString) {
+        try {
+            return Bukkit.createBlockData(stateString);
+        } catch (Exception e) {
+            if (stateString.contains(":")) return null;
+            try {
+                return Bukkit.createBlockData("minecraft:" + stateString);
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+    }
+
+    /** {@code minecraft:foo[a=b]} から {@code minecraft:foo} を取り出す（報告用）。 */
+    private static String blockName(String stateString) {
+        int bracket = stateString.indexOf('[');
+        return bracket < 0 ? stateString : stateString.substring(0, bracket);
     }
 
     private static boolean isSign(Material material) {
