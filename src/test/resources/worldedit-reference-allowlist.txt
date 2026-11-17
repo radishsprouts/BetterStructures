@@ -1,0 +1,45 @@
+# WorldEdit / FAWE (com/sk89q/, com/fastasyncworldedit/) を参照してよいクラスの許可リスト。
+# 内部名（スラッシュ区切り）で 1 行 1 クラス。# から始まる行と空行は無視する。
+#
+# これは「参照してもよい」であって「参照していなければならない」ではない。
+# 段B で各担当が WorldEdit への参照を外しても、このリストに残っていてテストは壊れない。
+# 許可リスト外の「新しい違反」だけが失敗になる。
+# 段C で本体がこのリストを空にする（WorldEdit 参照は integration/worldedit/ だけに閉じる）。
+com/magmaguy/betterstructures/buildingfitter/FitAirBuilding
+com/magmaguy/betterstructures/buildingfitter/FitAnything$Finishing
+com/magmaguy/betterstructures/buildingfitter/FitAnything$Preparation
+com/magmaguy/betterstructures/buildingfitter/FitAnything
+com/magmaguy/betterstructures/buildingfitter/FitLiquidBuilding
+com/magmaguy/betterstructures/buildingfitter/FitSurfaceBuilding
+com/magmaguy/betterstructures/buildingfitter/FitUndergroundBuilding
+com/magmaguy/betterstructures/buildingfitter/util/TerrainAdequacy
+com/magmaguy/betterstructures/buildingfitter/util/Topology
+com/magmaguy/betterstructures/config/modules/ModulesConfig
+com/magmaguy/betterstructures/config/schematics/SchematicConfig
+com/magmaguy/betterstructures/modules/BlockAttachedEntityPaste$1
+com/magmaguy/betterstructures/modules/BlockAttachedEntityPaste$2
+com/magmaguy/betterstructures/modules/BlockAttachedEntityPaste
+com/magmaguy/betterstructures/modules/ModularPasteCursor
+com/magmaguy/betterstructures/modules/ModularWorld
+com/magmaguy/betterstructures/modules/ModulePasting$1
+com/magmaguy/betterstructures/modules/ModulePasting$ModularPaste
+com/magmaguy/betterstructures/modules/ModulePasting$ModuleInput
+com/magmaguy/betterstructures/modules/ModulePasting$NbtPlacement
+com/magmaguy/betterstructures/modules/ModulePasting
+com/magmaguy/betterstructures/modules/ModulesContainer
+com/magmaguy/betterstructures/modules/WFCNode
+com/magmaguy/betterstructures/schematics/SchematicContainer
+com/magmaguy/betterstructures/thirdparty/WorldGuard
+com/magmaguy/betterstructures/util/WorldEditUtils$1
+com/magmaguy/betterstructures/util/WorldEditUtils
+com/magmaguy/betterstructures/worldedit/Schematic$ClipboardPasteOperation
+com/magmaguy/betterstructures/worldedit/Schematic$PasteBlock
+com/magmaguy/betterstructures/worldedit/Schematic$PreparedState
+com/magmaguy/betterstructures/worldedit/Schematic
+com/magmaguy/betterstructures/worldedit/SchematicClipboardCache$Entry
+com/magmaguy/betterstructures/worldedit/SchematicClipboardCache
+com/magmaguy/betterstructures/worldedit/SchematicDiskCache$LoadedClipboard
+com/magmaguy/betterstructures/worldedit/SchematicDiskCache$RotationCorrectedEntity
+com/magmaguy/betterstructures/worldedit/SchematicDiskCache$RotationFaithfulClipboard
+com/magmaguy/betterstructures/worldedit/SchematicDiskCache
+com/magmaguy/betterstructures/worldedit/WorldEditCompatibility
