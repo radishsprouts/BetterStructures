@@ -1,5 +1,7 @@
 package com.magmaguy.betterstructures.config;
 
+import com.magmaguy.betterstructures.runtime.FlowSettings;
+import com.magmaguy.betterstructures.runtime.RuntimeSettings;
 import com.magmaguy.magmacore.config.ConfigurationEngine;
 import com.magmaguy.magmacore.config.ConfigurationFile;
 import com.magmaguy.magmacore.nightbreak.NightbreakPluginUpdater;
@@ -217,7 +219,104 @@ public class DefaultConfig extends ConfigurationFile {
                         "This applies to all worlds. Set to 0 to disable spawn protection."),
                 fileConfiguration, "spawnProtectionRadius", 100);
 
+        initializeFlowSettings();
+
         ConfigurationEngine.fileSaverOnlyDefaults(fileConfiguration, file);
+    }
+
+    /**
+     * Reads the generation flow control settings. Missing keys are appended with their defaults by
+     * {@code fileSaverOnlyDefaults}, existing keys keep their meaning. Out-of-range values fall back to the
+     * default with a single warning.
+     */
+    private void initializeFlowSettings() {
+        FlowSettings d = FlowSettings.defaults();
+        int scanSlots = validatedInt("generationScanSlots", ConfigurationEngine.setInt(
+                List.of(
+                        "How many terrain scans for new structures may run at the same time.",
+                        "Scans beyond this number wait in line and are processed in order, none are dropped.",
+                        "Must be between 1 and 64. Invalid values use the default of " + d.scanSlots() + "."),
+                fileConfiguration, "generationScanSlots", d.scanSlots()), 1, 64, d.scanSlots());
+        int pasteSlots = validatedInt("generationPasteSlots", ConfigurationEngine.setInt(
+                List.of(
+                        "How many structures may be pasted at the same time.",
+                        "Structures beyond this number wait in line and are pasted in order, none are dropped.",
+                        "Must be between 1 and 64. Invalid values use the default of " + d.pasteSlots() + "."),
+                fileConfiguration, "generationPasteSlots", d.pasteSlots()), 1, 64, d.pasteSlots());
+        int wfcSlots = validatedInt("generationDungeonSlots", ConfigurationEngine.setInt(
+                List.of(
+                        "How many dungeons (wave function collapse) may be generated at the same time.",
+                        "Must be between 1 and 16. Invalid values use the default of " + d.wfcSlots() + "."),
+                fileConfiguration, "generationDungeonSlots", d.wfcSlots()), 1, 16, d.wfcSlots());
+        int chunkLoadLimit = validatedInt("chunkLoadLimit", ConfigurationEngine.setInt(
+                List.of(
+                        "How many chunks BetterStructures may ask the server to load at the same time, across all worlds.",
+                        "Scans, pastes, dungeons and pregeneration all share this limit.",
+                        "Must be between 1 and 256. Invalid values use the default of " + d.chunkLoadLimit() + "."),
+                fileConfiguration, "chunkLoadLimit", d.chunkLoadLimit()), 1, 256, d.chunkLoadLimit());
+        int chunkLoadLimitPerWorld = validatedInt("chunkLoadLimitPerWorld", ConfigurationEngine.setInt(
+                List.of(
+                        "How many chunks BetterStructures may ask the server to load at the same time in a single world.",
+                        "Must be between 1 and 256. Invalid values use the default of " + d.chunkLoadLimitPerWorld() + "."),
+                fileConfiguration, "chunkLoadLimitPerWorld", d.chunkLoadLimitPerWorld()), 1, 256, d.chunkLoadLimitPerWorld());
+        double minBudget = validatedDouble("pasteBudgetMinMilliseconds", ConfigurationEngine.setDouble(
+                List.of(
+                        "The lowest time budget per tick, in milliseconds, that BetterStructures can be throttled down to",
+                        "when the server falls behind. Pasting never gets slower than this.",
+                        "Must be between 0.05 and 50. Invalid values use the default of " + d.budgetMinMillis() + "."),
+                fileConfiguration, "pasteBudgetMinMilliseconds", d.budgetMinMillis()), 0.05, 50.0, d.budgetMinMillis());
+        double recover = validatedDouble("pasteBudgetRecoverMilliseconds", ConfigurationEngine.setDouble(
+                List.of(
+                        "How many milliseconds of the throttled time budget are given back per tick once the server",
+                        "is no longer falling behind, until percentageOfTickUsedForPasting is reached again.",
+                        "Must be between 0.01 and 50. Invalid values use the default of " + d.budgetRecoverMillis() + "."),
+                fileConfiguration, "pasteBudgetRecoverMilliseconds", d.budgetRecoverMillis()), 0.01, 50.0, d.budgetRecoverMillis());
+        double backoff = validatedDouble("pasteBudgetBackoffFactor", ConfigurationEngine.setDouble(
+                List.of(
+                        "When the server falls behind, the time budget is multiplied by this factor.",
+                        "Must be above 0 and below 1. Invalid values use the default of " + d.budgetBackoffFactor() + "."),
+                fileConfiguration, "pasteBudgetBackoffFactor", d.budgetBackoffFactor()), 0.01, 0.99, d.budgetBackoffFactor());
+        double lagThreshold = validatedDouble("pasteLagThresholdMilliseconds", ConfigurationEngine.setDouble(
+                List.of(
+                        "A scheduled task that runs this many milliseconds later than planned counts as the server falling behind.",
+                        "Must be between 1 and 5000. Invalid values use the default of " + d.lagThresholdMillis() + "."),
+                fileConfiguration, "pasteLagThresholdMilliseconds", d.lagThresholdMillis()), 1.0, 5000.0, d.lagThresholdMillis());
+        int wfcWindow = validatedInt("dungeonPasteWindowChunks", ConfigurationEngine.setInt(
+                List.of(
+                        "While pasting a dungeon, only the chunk being pasted and this many chunks ahead are kept loaded.",
+                        "Must be between 1 and 64. Invalid values use the default of " + d.wfcWindowChunks() + "."),
+                fileConfiguration, "dungeonPasteWindowChunks", d.wfcWindowChunks()), 1, 64, d.wfcWindowChunks());
+        boolean metrics = ConfigurationEngine.setBoolean(
+                List.of(
+                        "Logs the generation queues, the time budget and chunk loading to the console at a fixed interval.",
+                        "Useful for finding out why structures show up late. Off by default."),
+                fileConfiguration, "runtimeMetricsLogging", d.metricsEnabled());
+        int metricsInterval = validatedInt("runtimeMetricsIntervalSeconds", ConfigurationEngine.setInt(
+                List.of(
+                        "Seconds between two runtimeMetricsLogging lines.",
+                        "Must be between 5 and 3600. Invalid values use the default of " + d.metricsIntervalSeconds() + "."),
+                fileConfiguration, "runtimeMetricsIntervalSeconds", d.metricsIntervalSeconds()), 5, 3600, d.metricsIntervalSeconds());
+
+        // percentageOfTickUsedForPasting keeps its meaning; the flow control only clamps it to 0.01-1 when used.
+        RuntimeSettings.set(new FlowSettings(scanSlots, pasteSlots, wfcSlots, chunkLoadLimit, chunkLoadLimitPerWorld,
+                percentageOfTickUsedForPasting, minBudget, recover, backoff, lagThreshold, wfcWindow,
+                metrics, metricsInterval));
+    }
+
+    private int validatedInt(String configKey, int configuredValue, int min, int max, int defaultValue) {
+        if (configuredValue >= min && configuredValue <= max) return configuredValue;
+        Logger.warn("Invalid " + configKey + " value " + configuredValue + "; using default " + defaultValue +
+                ". Values must be between " + min + " and " + max + ".");
+        fileConfiguration.set(configKey, defaultValue);
+        return defaultValue;
+    }
+
+    private double validatedDouble(String configKey, double configuredValue, double min, double max, double defaultValue) {
+        if (!Double.isNaN(configuredValue) && configuredValue >= min && configuredValue <= max) return configuredValue;
+        Logger.warn("Invalid " + configKey + " value " + configuredValue + "; using default " + defaultValue +
+                ". Values must be between " + min + " and " + max + ".");
+        fileConfiguration.set(configKey, defaultValue);
+        return defaultValue;
     }
 
     private int validatedDistance(String configKey, int configuredValue, int defaultValue) {
