@@ -4,6 +4,7 @@ import com.magmaguy.betterstructures.BetterStructures;
 import com.magmaguy.betterstructures.config.modulegenerators.ModuleGeneratorsConfig;
 import com.magmaguy.betterstructures.config.modulegenerators.ModuleGeneratorsConfigFields;
 import com.magmaguy.betterstructures.modules.WFCGenerator;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.magmacore.command.AdvancedCommand;
 import com.magmaguy.magmacore.command.CommandData;
 import com.magmaguy.magmacore.command.SenderType;
@@ -22,7 +23,7 @@ public class GenerateModulesCommand extends AdvancedCommand {
                         : ModuleGeneratorsConfig.getModuleGenerators().keySet().stream().toList(),
                 "<module.yml>"));
         setPermission("betterstructures.generatemodules");
-        setDescription("Generates modular builds in a dedicated world, based on the generator's configuration file.");
+        setDescription("Generates modular builds from the generator's configuration file (in a dedicated world, or at your feet when isWorldGeneration is false; isWorldGeneration: true is not available on Folia yet).");
         setSenderType(SenderType.PLAYER);
     }
 
@@ -33,6 +34,13 @@ public class GenerateModulesCommand extends AdvancedCommand {
         ModuleGeneratorsConfigFields moduleGeneratorsConfigFields = ModuleGeneratorsConfig.getModuleGenerators().get(commandData.getStringArgument("moduleGeneratorsConfigFile"));
         if (moduleGeneratorsConfigFields == null) {
             Logger.sendMessage(commandData.getCommandSender(), "File " + commandData.getStringArgument("moduleGeneratorsConfigFile") + " not found! The world won't generate.");
+            return;
+        }
+        // Folia で isWorldGeneration: true の設定なら、生成せず案内だけを実行者へ出す（社長決定・2026-11-18）
+        String refusal = WFCGenerator.unsupportedWorldGenerationMessage(
+                moduleGeneratorsConfigFields, PlatformScheduler.isFolia());
+        if (refusal != null) {
+            Logger.sendMessage(commandData.getCommandSender(), refusal);
             return;
         }
         WFCGenerator.generateFromConfig(

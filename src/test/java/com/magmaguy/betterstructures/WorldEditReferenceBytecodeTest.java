@@ -33,6 +33,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class WorldEditReferenceBytecodeTest {
     private static final String ALLOWED_PACKAGE = "com/magmaguy/betterstructures/integration/worldedit/";
+    /** WorldGuard の API 自体が WorldEdit の型（BlockVector3 等）を引数に取るため、WorldGuard 連携も許す。 */
+    private static final String ALLOWED_WORLDGUARD_PACKAGE = "com/magmaguy/betterstructures/integration/worldguard/";
     private static final List<String> FORBIDDEN_PREFIXES = List.of("com/sk89q/", "com/fastasyncworldedit/");
 
     @Test
@@ -46,7 +48,7 @@ class WorldEditReferenceBytecodeTest {
             for (Path file : files.filter(p -> p.toString().endsWith(".class")).collect(Collectors.toList())) {
                 String internalName = classesRoot.relativize(file).toString().replace('\\', '/');
                 internalName = internalName.substring(0, internalName.length() - ".class".length());
-                if (internalName.startsWith(ALLOWED_PACKAGE)) continue;
+                if (internalName.startsWith(ALLOWED_PACKAGE) || internalName.startsWith(ALLOWED_WORLDGUARD_PACKAGE)) continue;
                 if (referencesWorldEdit(Files.readAllBytes(file))) violations.add(internalName);
             }
         }

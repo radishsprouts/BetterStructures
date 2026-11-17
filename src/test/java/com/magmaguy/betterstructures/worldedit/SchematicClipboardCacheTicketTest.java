@@ -10,8 +10,14 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 
-/** Temporary regression coverage for the schematic reload/cache ticket. */
+/**
+ * Temporary regression coverage for the schematic reload/cache ticket.
+ * 中身を調べると失敗する偽の Clipboard は Mockito で作る（テストコード自身ではリフレクションを使わない）。
+ * SchematicClipboardCache 自体は段C で削除される（その時にこのテストも削除する）。
+ */
 final class SchematicClipboardCacheTicketTest {
     @AfterEach
     void clearCaches() { SchematicClipboardCache.shutdown(); }
@@ -25,6 +31,7 @@ final class SchematicClipboardCacheTicketTest {
 
         cache.put(source.toFile(), loaded);
         assertSame(loaded.clipboard(), cache.get(source.toFile()), "an unchanged schematic should be reused");
+        verifyNoInteractions(loaded.clipboard());
 
         var modified = Files.getLastModifiedTime(source);
         Files.write(source, new byte[] {4, 3, 2, 1});
@@ -57,9 +64,8 @@ final class SchematicClipboardCacheTicketTest {
     }
 
     private static SchematicDiskCache.LoadedClipboard captured(Path source) throws Exception {
-        Clipboard clipboard = (Clipboard) java.lang.reflect.Proxy.newProxyInstance(
-                Clipboard.class.getClassLoader(), new Class<?>[] {Clipboard.class},
-                (proxy, method, arguments) -> { throw new AssertionError("Cache must not inspect clipboard contents"); });
+        // キャッシュは Clipboard の中身を見ない。見たら verifyNoInteractions で失敗する。
+        Clipboard clipboard = mock(Clipboard.class);
         return new SchematicDiskCache.LoadedClipboard(clipboard, new SchematicDiskCache.SourceIdentity(
                 Files.size(source), Files.getLastModifiedTime(source).to(java.util.concurrent.TimeUnit.NANOSECONDS),
                 java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")

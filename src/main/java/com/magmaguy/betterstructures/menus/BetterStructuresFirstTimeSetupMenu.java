@@ -14,7 +14,6 @@ import com.magmaguy.magmacore.nightbreak.NightbreakSetupMenuHelper;
 import com.magmaguy.magmacore.util.ItemStackGenerator;
 import com.magmaguy.magmacore.util.Logger;
 import com.magmaguy.magmacore.util.SpigotMessage;
-import org.bukkit.Bukkit;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 
@@ -29,6 +28,7 @@ public class BetterStructuresFirstTimeSetupMenu {
 
     public static void createMenu(Player player) {
         if (BetterStructures.rejectContentCommandDuringReload(player)) return;
+        if (!canManage(player)) return;
         PlatformScheduler.runEntity(player, () -> {
             if (!player.isOnline()) return;
             AdvancedMenu advancedMenu = new AdvancedMenu(player, 27);
@@ -82,6 +82,7 @@ public class BetterStructuresFirstTimeSetupMenu {
             @Override
             public void onClick(Player player) {
                 player.closeInventory();
+                if (!canManage(player)) return;
                 DefaultConfig.toggleSetupDone(true);
                 if (PlatformScheduler.isFolia()) {
                     sendRecommendedSetupInstructionsSafely(player);
@@ -129,6 +130,7 @@ public class BetterStructuresFirstTimeSetupMenu {
             @Override
             public void onClick(Player player) {
                 player.closeInventory();
+                if (!canManage(player)) return;
                 DefaultConfig.toggleSetupDone(true);
                 Logger.sendSimpleMessage(player, "&8&m-----------------------------------------------------");
                 Logger.sendSimpleMessage(player, "&6Setup complete. You can manage content manually through &a/bs setup&6.");
@@ -139,22 +141,7 @@ public class BetterStructuresFirstTimeSetupMenu {
     }
 
     private static MenuButton createSkipItem() {
-        if (!Bukkit.getPluginManager().isPluginEnabled("WorldEdit") &&
-                !Bukkit.getPluginManager().isPluginEnabled("FastAsyncWorldEdit")) {
-            return new MenuButton(ItemStackGenerator.generateItemStack(
-                    Material.RED_STAINED_GLASS_PANE,
-                    "&cWorldEdit not installed",
-                    List.of("&cBetterStructures needs WorldEdit or FAWE installed."))) {
-                @Override
-                public void onClick(Player player) {
-                    player.closeInventory();
-                    Logger.sendSimpleMessage(player, "&8&m-----------------------------------------------------");
-                    Logger.sendSimpleMessage(player, "&cInstall WorldEdit or FAWE before using BetterStructures.");
-                    Logger.sendSimpleMessage(player, "&8&m-----------------------------------------------------");
-                }
-            };
-        }
-
+        // WorldEdit / FAWE の有無にかかわらず通常のボタンを出す（貼り付けは独自エンジンで行う）。
         return new MenuButton(ItemStackGenerator.generateItemStack(
                 Material.RED_STAINED_GLASS_PANE,
                 "&cUse Current Content",
@@ -162,6 +149,7 @@ public class BetterStructuresFirstTimeSetupMenu {
             @Override
             public void onClick(Player player) {
                 player.closeInventory();
+                if (!canManage(player)) return;
                 DefaultConfig.toggleSetupDone(true);
                 if (SchematicConfig.getSchematicConfigurations().isEmpty()) {
                     Logger.sendSimpleMessage(player, "&8&m-----------------------------------------------------");
@@ -173,10 +161,20 @@ public class BetterStructuresFirstTimeSetupMenu {
                     Logger.sendSimpleMessage(player, "&aSetup complete. BetterStructures will keep using your current installed content.");
                     Logger.sendSimpleMessage(player, "&7Run &a/bs reload &7if you import new content later.");
                     Logger.sendSimpleMessage(player, "&8&m-----------------------------------------------------");
-                    ReloadCommand.reload(player);
+                    // 再読み込みは /bs reload と同じ権限（betterstructures.*）が要る。
+                    if (player.hasPermission("betterstructures.*")) ReloadCommand.reload(player);
                 }
             }
         };
+    }
+
+    /**
+     * 押した時の権限の確認。メニューを開く時だけでなく、ボタンの処理でも確かめる
+     * （メニューの見た目やタイトルでは管理者かどうかを判定しない）。
+     * 初回設定のコマンド（betterstructures.initialize）か全権（betterstructures.*）が要る。
+     */
+    static boolean canManage(Player player) {
+        return player.hasPermission("betterstructures.*") || player.hasPermission("betterstructures.initialize");
     }
 
     private static void sendLink(Player player, String prefix, String display, String hover, String url) {

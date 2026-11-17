@@ -2,6 +2,7 @@ package com.magmaguy.betterstructures.worldedit;
 
 import com.magmaguy.magmacore.util.Logger;
 import org.apache.logging.log4j.Level;
+import org.bukkit.Bukkit;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.LoggerContext;
@@ -105,11 +106,13 @@ public final class SchematicConversionLog {
          */
         private static LoggerContext resolveDataFixerContext() {
             try {
-                Class<?> dataFixerClass = Class.forName("com.mojang.datafixers.DataFixerUpper");
-                if (LogManager.getContext(dataFixerClass.getClassLoader(), false)
+                //DataFixerUpper is part of the server, so its classloader is the one that loaded the
+                //Bukkit API (the same server application loader). Taking that loader directly avoids
+                //looking the DataFixerUpper class up by name.
+                if (LogManager.getContext(Bukkit.class.getClassLoader(), false)
                         instanceof LoggerContext context) return context;
             } catch (Throwable ignored) {
-                //DataFixerUpper missing or shaded elsewhere; the caller-context
+                //The server's loader gave no context; the caller-context
                 //fallback below is the pre-existing behavior.
             }
             return LogManager.getContext(false) instanceof LoggerContext context ? context : null;

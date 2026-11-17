@@ -33,6 +33,36 @@ public interface EliteMobsHook {
 
     /** そのボスが、プレイヤーごとに別の実体を出す「インスタンス型」か。不明・EliteMobs 無しは false。 */
     boolean isInstancedBoss(String bossFilename);
+
+    // ---- ここから U3 が追加した項目（追加のみ。既存の署名は変えていない）。すべて既定実装を持つ ----
+
+    /** そのボスの設定ファイルが EliteMobs に存在するか。EliteMobs 無しは false。 */
+    default boolean bossExists(String bossFilename) {
+        return false;
+    }
+
+    /**
+     * スポーンプールが選んだ、インスタンス型でないボスをその場に出す（ダンジョンの看板用）。
+     * 出現させられたら true。EliteMobs 無し・設定が無い時は false。
+     */
+    default boolean spawnPoolBoss(Location location, String bossFilename) {
+        return false;
+    }
+
+    /**
+     * インスタンス型のボスを出す。戻り値は EliteMobs の {@code InstancedBossEntity}
+     * （EliteMobs の型をこのインターフェースに出さないため {@link Object}）。
+     * 呼び出し側（{@code ModularWorld}）は公開 API の戻り値としてそのまま渡す。出せなければ null。
+     *
+     * @param location          出現位置
+     * @param level             ボスのレベル
+     * @param difficultyId      その位置の難易度の識別子
+     * @param originalSpawnPool 元のスポーンプールのファイル名（ボスの付随データに残す）
+     */
+    default Object spawnInstancedBoss(Location location, String bossFilename, int level,
+                                      String difficultyId, String originalSpawnPool) {
+        return null;
+    }
 }
 
 /** {@link EliteMobsHook#none()} の実体。同じファイルに置いて外へ見せない。 */

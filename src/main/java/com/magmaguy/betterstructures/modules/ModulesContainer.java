@@ -3,7 +3,6 @@ package com.magmaguy.betterstructures.modules;
 import com.magmaguy.betterstructures.config.modules.ModulesConfigFields;
 import com.magmaguy.betterstructures.util.WeighedProbability;
 import com.magmaguy.magmacore.util.Logger;
-import com.sk89q.worldedit.extent.clipboard.Clipboard;
 import lombok.Getter;
 import org.joml.Vector3i;
 
@@ -14,8 +13,6 @@ public class ModulesContainer {
     @Getter
     private static final HashMap<String, ModulesContainer> modulesContainers = new HashMap<>();
     private static final List<Integer> validRotations = Arrays.asList(0, 90, 180, 270);
-    @Getter
-    private final Clipboard clipboard;
     @Getter
     private final com.magmaguy.betterstructures.schematic.model.StructureSchematic structureSchematic;
     @Getter
@@ -37,23 +34,6 @@ public class ModulesContainer {
 
     public ModulesContainer(com.magmaguy.betterstructures.schematic.model.StructureSchematic structureSchematic, String clipboardFilename, ModulesConfigFields modulesConfigField, String configFilename, int rotation) {
         this.structureSchematic = structureSchematic;
-        this.clipboard = null;
-        this.clipboardFilename = clipboardFilename;
-        this.modulesConfigField = modulesConfigField;
-        this.configFilename = configFilename;
-        this.rotation = rotation;
-        if (!clipboardFilename.equalsIgnoreCase("nothing")) {
-            processBorders(modulesConfigField.getBorderMap());
-            modulesContainers.put(clipboardFilename + "_rotation_" + rotation, this);
-        } else {
-            nothing = true;
-            modulesContainers.put(clipboardFilename, this);
-        }
-    }
-
-    public ModulesContainer(Clipboard clipboard, String clipboardFilename, ModulesConfigFields modulesConfigField, String configFilename, int rotation) {
-        this.structureSchematic = null;
-        this.clipboard = clipboard;
         this.clipboardFilename = clipboardFilename;
         this.modulesConfigField = modulesConfigField;
         this.configFilename = configFilename;
@@ -69,10 +49,6 @@ public class ModulesContainer {
 
     public static void initializeModulesContainer(com.magmaguy.betterstructures.schematic.model.StructureSchematic structureSchematic, String clipboardFilename, ModulesConfigFields modulesConfigField, String configFilename) {
         validRotations.forEach(rotation -> new ModulesContainer(structureSchematic, clipboardFilename, modulesConfigField, configFilename, rotation));
-    }
-
-    public static void initializeModulesContainer(Clipboard clipboard, String clipboardFilename, ModulesConfigFields modulesConfigField, String configFilename) {
-        validRotations.forEach(rotation -> new ModulesContainer(clipboard, clipboardFilename, modulesConfigField, configFilename, rotation));
     }
 
     public static void postInitializeModulesContainer() {
@@ -115,7 +91,7 @@ public class ModulesContainer {
 
     public static void initializeSpecialModules() {
         //Initialize "nothing", a reserved name with special behavior
-        nothingContainer = new ModulesContainer((com.magmaguy.betterstructures.schematic.model.StructureSchematic) null, "nothing", new ModulesConfigFields("nothing", true), null, 0);
+        nothingContainer = new ModulesContainer(null, "nothing", new ModulesConfigFields("nothing", true), null, 0);
         nothingContainer.borderTags = new BorderTags(Map.of(
                 Direction.NORTH, Collections.singletonList(new NeighborTag("nothing")),
                 Direction.SOUTH, Collections.singletonList(new NeighborTag("nothing")),

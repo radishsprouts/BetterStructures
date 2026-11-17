@@ -1,9 +1,9 @@
 package com.magmaguy.betterstructures.worldedit;
 
 import com.magmaguy.betterstructures.MetadataHandler;
-import com.sk89q.worldedit.WorldEdit;
-import com.sk89q.worldedit.extension.platform.Capability;
-import com.sk89q.worldedit.extension.platform.Platform;
+import com.magmaguy.betterstructures.integration.SchematicImport;
+import com.magmaguy.betterstructures.integration.worldedit.WorldEditAdapterCheck;
+import com.magmaguy.betterstructures.integration.worldedit.WorldEditSchematicImport;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.Plugin;
 
@@ -86,19 +86,20 @@ public final class WorldEditCompatibility {
      * runs without block state conversion and NBT support, which breaks schematic loading and pasting.
      */
     public static void checkAdapterOnStartup() {
-        if (Bukkit.getPluginManager().getPlugin("WorldEdit") == null) {
+        if (!isWorldEditPresent()) {
             Bukkit.getLogger().info("[BetterStructures] WorldEdit not detected. Running Folia native structure generation engine.");
             return;
         }
-        int dataVersion;
+        Integer dataVersion;
         try {
-            Platform platform = WorldEdit.getInstance().getPlatformManager().queryCapability(Capability.WORLD_EDITING);
-            dataVersion = platform.getDataVersion();
-        } catch (RuntimeException | LinkageError exception) {
-            // No ready platform or an API this check cannot read; schematic loading reports real failures.
+            // WorldEdit の型を使う部分は integration/worldedit/ の中。有効を確かめたこの分岐の中でだけ呼ぶ。
+            dataVersion = WorldEditAdapterCheck.queryDataVersion();
+        } catch (LinkageError exception) {
+            // WorldEdit's classes are not usable; schematic loading reports real failures.
             return;
         }
-        if (dataVersion != -1) return;
+        // No ready platform or an API this check cannot read: schematic loading reports real failures.
+        if (dataVersion == null || dataVersion != -1) return;
         List<String> lines = new ArrayList<>();
         lines.add(worldEditName() + " " + worldEditVersion() + " does not support this server version.");
         lines.add("This is a " + worldEditName() + " problem, not a BetterStructures bug.");
@@ -111,6 +112,31 @@ public final class WorldEditCompatibility {
                 + " and restart the server:");
         lines.add("  " + downloadUrl());
         logBox(lines);
+    }
+
+    /** WorldEdit または FastAsyncWorldEdit が導入されているか。 */
+    public static boolean isWorldEditPresent() {
+        return Bukkit.getPluginManager().getPlugin("WorldEdit") != null
+                || Bukkit.getPluginManager().getPlugin("FastAsyncWorldEdit") != null;
+    }
+
+    /**
+     * ネイティブで読めない図面を読む補助（WorldEdit 実装）を作る。WorldEdit または FastAsyncWorldEdit が
+     * 有効な時だけ生成し、無ければ null。貼り付けには使わない（常に独自エンジン）。
+     *
+     * <p>WorldEdit の型を使う {@link WorldEditSchematicImport} は、この分岐の中でしか参照しない。
+     */
+    public static SchematicImport createFallbackImport() {
+        if (!Bukkit.getPluginManager().isPluginEnabled("WorldEdit")
+                && !Bukkit.getPluginManager().isPluginEnabled("FastAsyncWorldEdit")) {
+            return null;
+        }
+        try {
+            return new WorldEditSchematicImport();
+        } catch (LinkageError e) {
+            log().warning("WorldEdit は有効ですが、図面の読み込み補助を使えませんでした: " + e);
+            return null;
+        }
     }
 
     /**
