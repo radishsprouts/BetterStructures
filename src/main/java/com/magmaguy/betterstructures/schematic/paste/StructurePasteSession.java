@@ -28,10 +28,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 /**
+ * @deprecated 貼り付けは {@link com.magmaguy.betterstructures.paste.NativePasteEngine} に一本化した。呼び出し元
+ * （FitAnything・ModulePasting・BetterStructures・Schematic）の付け替えが済み次第、このクラスと
+ * {@link ChunkPasteTask} を削除する。新しく使わないこと。
+ *
  * Manages the asynchronous, serialized per-chunk paste lifecycle of a structure.
  * Guarantees 2.0ms per-tick regional work budget, minimal chunk ticket hold (1 chunk at a time),
  * and 100% completion without dropping queued structures.
  */
+@Deprecated
 public final class StructurePasteSession {
 
     private static final int MAX_CONCURRENT_SESSIONS = 2;
