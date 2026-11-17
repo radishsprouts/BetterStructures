@@ -7,6 +7,8 @@ import org.bukkit.World;
 import org.bukkit.plugin.Plugin;
 
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -101,8 +103,77 @@ public final class PluginChunkHolds {
         }
     }
 
+    /**
+     * 持ち主を切り替える。新しい持ち主で先に hold してから古い持ち主の分を release するので、
+     * 参照カウントが 0 になる瞬間（=チケットが外れて千切れる瞬間）を作らない（04章 G2）。
+     * どのスレッドから呼んでもよい。チケットの付け外しは今までどおり所有リージョンで行う。
+     *
+     * @throws IllegalArgumentException ワールドが違う時
+     */
+    public static void transfer(HoldSet from, HoldSet to) {
+        if (from == null || to == null || from == to) return;
+        if (from.world != to.world) {
+            throw new IllegalArgumentException("hold の引き継ぎはワールドをまたげません");
+        }
+        for (long key : from.keys()) {
+            to.hold((int) key, (int) (key >> 32));
+        }
+        from.releaseAll();
+    }
+
     public static void shutdown() {
         holds.clear();
+    }
+
+    /**
+     * 1つの持ち主（走査のジョブ・貼り付けのセッション等）が持っているチャンクの hold の集まり。
+     * 同じチャンクを同じ持ち主が二重に hold しない（持ち主の中では 0/1）。スレッドセーフ。
+     */
+    public static final class HoldSet {
+        private final World world;
+        private final Set<Long> keys = ConcurrentHashMap.newKeySet();
+
+        public HoldSet(World world) {
+            this.world = Objects.requireNonNull(world, "world");
+        }
+
+        public World world() {
+            return world;
+        }
+
+        /** まだ持っていなければ hold する。実際に hold したら true。 */
+        public boolean hold(int chunkX, int chunkZ) {
+            if (!keys.add(Chunk.getChunkKey(chunkX, chunkZ))) return false;
+            PluginChunkHolds.hold(world, chunkX, chunkZ);
+            return true;
+        }
+
+        /** 持っていれば release する。実際に release したら true。 */
+        public boolean release(int chunkX, int chunkZ) {
+            if (!keys.remove(Chunk.getChunkKey(chunkX, chunkZ))) return false;
+            PluginChunkHolds.release(world, chunkX, chunkZ);
+            return true;
+        }
+
+        public boolean contains(int chunkX, int chunkZ) {
+            return keys.contains(Chunk.getChunkKey(chunkX, chunkZ));
+        }
+
+        public int size() {
+            return keys.size();
+        }
+
+        /** 持っているチャンクの鍵（{@code Chunk#getChunkKey} 式）の写し。 */
+        public Set<Long> keys() {
+            return Set.copyOf(keys);
+        }
+
+        /** 持っているものを全部 release する。 */
+        public void releaseAll() {
+            for (long key : Set.copyOf(keys)) {
+                release((int) key, (int) (key >> 32));
+            }
+        }
     }
 
     private record ChunkKey(UUID worldId, int x, int z) {
