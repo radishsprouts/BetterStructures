@@ -1,20 +1,19 @@
 package com.magmaguy.betterstructures.config.schematics;
 
 import com.magmaguy.betterstructures.MetadataHandler;
+import com.magmaguy.betterstructures.integration.NativeSchematicImport;
+import com.magmaguy.betterstructures.integration.SchematicImport;
+import com.magmaguy.betterstructures.schematic.reader.UnresolvedBlockReport;
 import com.magmaguy.betterstructures.schematics.SchematicContainer;
 import com.magmaguy.betterstructures.util.SchematicFileUtils;
-import com.magmaguy.betterstructures.worldedit.SchematicClipboardCache;
 import com.magmaguy.betterstructures.worldedit.SchematicConversionLog;
-import com.magmaguy.betterstructures.worldedit.SchematicDiskCache;
 import com.magmaguy.betterstructures.worldedit.WorldEditCompatibility;
 import com.magmaguy.magmacore.config.CustomConfig;
 import com.magmaguy.magmacore.config.ContentFileSelector;
 import com.magmaguy.magmacore.util.Logger;
-import com.sk89q.worldedit.extent.clipboard.Clipboard;
 import lombok.Getter;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -22,10 +21,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Future;
 
 public class SchematicConfig extends CustomConfig {
     private static final Duration LOAD_SHUTDOWN_TIMEOUT = Duration.ofSeconds(15);
@@ -35,9 +31,6 @@ public class SchematicConfig extends CustomConfig {
     private static final HashMap<String, SchematicConfigField> schematicConfigurations = new HashMap<>();
     // In-memory cache of parsed StructureSchematics for zero-disk-IO reuse across reloads
     private static final Map<File, com.magmaguy.betterstructures.schematic.model.StructureSchematic> structureSchematicCache = new ConcurrentHashMap<>();
-    //Survives content reloads on purpose: reloading exists to re-read configuration, and the
-    //schematic files themselves are usually untouched between one reload and the next.
-    private static final SchematicClipboardCache clipboardCache = new SchematicClipboardCache();
 
     public static void prepareForEnable() {
         loadCoordinator.open();
@@ -110,22 +103,31 @@ public class SchematicConfig extends CustomConfig {
         Map<File, com.magmaguy.betterstructures.schematic.model.StructureSchematic> result = new LinkedHashMap<>();
         if (schematicFiles == null || schematicFiles.isEmpty()) return result;
 
-        // Parallel parsing using common ForkJoinPool (pure Java, zero locks, zero DFU overhead)
-        schematicFiles.parallelStream().forEach(file -> {
-            com.magmaguy.betterstructures.schematic.model.StructureSchematic cached = structureSchematicCache.get(file);
-            if (cached != null) {
-                return;
-            }
-            try {
-                com.magmaguy.betterstructures.schematic.model.StructureSchematic parsed =
-                        com.magmaguy.betterstructures.schematic.reader.SchematicReader.read(file);
-                if (parsed != null) {
-                    structureSchematicCache.put(file, parsed);
+        // ネイティブで読めない図面だけ、WorldEdit/FAWE が有効なら WorldEdit 実装で読む（貼り付けは常に独自エンジン）
+        SchematicImport schematicImport = NativeSchematicImport.withFallback(WorldEditCompatibility.createFallbackImport());
+        UnresolvedBlockReport unresolvedBlocks = new UnresolvedBlockReport();
+        WorldEditCompatibility.reset();
+        // Parallel parsing using common ForkJoinPool (pure Java, zero locks)。
+        // 古い版の変換でサーバーが出す大量のログは1行にまとめる
+        try (SchematicConversionLog.Session conversionLog = SchematicConversionLog.capture()) {
+            schematicFiles.parallelStream().forEach(file -> {
+                com.magmaguy.betterstructures.schematic.model.StructureSchematic cached = structureSchematicCache.get(file);
+                if (cached != null) {
+                    return;
                 }
-            } catch (Exception e) {
-                Logger.warn("Failed to read schematic file " + file.getPath() + ": " + e.getMessage());
-            }
-        });
+                try {
+                    com.magmaguy.betterstructures.schematic.model.StructureSchematic parsed =
+                            schematicImport.read(file.toPath(), unresolvedBlocks);
+                    if (parsed != null) {
+                        structureSchematicCache.put(file, parsed);
+                    }
+                } catch (Exception e) {
+                    Logger.warn("Failed to read schematic file " + file.getPath() + ": " + e.getMessage());
+                }
+            });
+        }
+        // 変換できずに空気にしたブロックは、読み込みの最後に1回だけ警告する
+        unresolvedBlocks.logSummary();
 
         // Insert in stable, sorted file order
         for (File file : schematicFiles) {
@@ -181,192 +183,6 @@ public class SchematicConfig extends CustomConfig {
         Logger.warn("Schematic folder " + folder.getPath() + " is outside the BetterStructures data folder; " +
                 "its configuration will be stored under schematics instead.");
         return "schematics";
-    }
-
-    /**
-     * Reads every schematic into a clipboard, in parallel.
-     * <p>
-     * Reading a .schem is not cheap: the shipped files carry an older Minecraft DataVersion, so
-     * WorldEdit runs Mojang's DataFixerUpper over every block entity in the file to migrate it to
-     * the running server's format. On a full content install that was the single largest block of
-     * startup work, and it was being done one file at a time on a single thread. The files are
-     * completely independent of one another, so this just spreads them over a small pool.
-     * <p>
-     * The first file is deliberately submitted and completed on its own before the remaining work
-     * is queued. WorldEdit's clipboard readers and block registries lazily initialise shared static
-     * state on first use, and racing several threads into that on a cold JVM risks a half-built
-     * registry. Once one read has completed, the remaining reads only touch per-file state. A
-     * warmup file served from
-     * {@link SchematicClipboardCache} does not warm anything, but it cannot be in that cache unless
-     * an earlier load already parsed it, so the registries are established either way.
-     * <p>
-     * Results go into a LinkedHashMap in the (sorted) input order so downstream config generation
-     * and log output stay identical between boots.
-     */
-    private static Map<File, Clipboard> loadClipboards(List<File> schematicFiles) {
-        Map<File, Clipboard> clipboards = new LinkedHashMap<>();
-        WorldEditCompatibility.reset();
-        if (schematicFiles.isEmpty()) return clipboards;
-
-        //Half the machine, capped. Thread dumps of this pool show the workers overwhelmingly
-        //RUNNABLE rather than blocked, so this scales with cores rather than bottlenecking on a
-        //shared lock. Initialization runs alongside the other plugins and the main thread, so it
-        //deliberately does not take the whole box.
-        int threads = Math.max(
-                2,
-                Math.min(Runtime.getRuntime().availableProcessors() / 2, 16));
-        SchematicLoadCoordinator.ActiveLoad activeLoad =
-                loadCoordinator.begin(threads);
-        boolean completed = false;
-        try {
-            activeLoad.checkRunning();
-            //Done before anything reads the cache, so a schematic that has been deleted since the
-            //last load can never be served out of it.
-            int forgotten = clipboardCache.retainOnly(schematicFiles);
-            activeLoad.checkRunning();
-
-            SchematicDiskCache diskCache =
-                    new SchematicDiskCache(SchematicDiskCache.structureCacheFolder());
-
-            try (SchematicConversionLog.Session conversionLog =
-                         SchematicConversionLog.capture()) {
-                File warmupFile = schematicFiles.get(0);
-                Clipboard warmupClipboard;
-                try {
-                    warmupClipboard = activeLoad.submit(
-                            () -> loadClipboard(
-                                    warmupFile,
-                                    diskCache,
-                                    activeLoad)).get();
-                } catch (ExecutionException exception) {
-                    if (exception.getCause() instanceof CancellationException cancellation) {
-                        throw cancellation;
-                    }
-                    throw new IllegalStateException(
-                            "Failed to load schematic " + warmupFile.getPath()
-                                    + "; refusing to initialize a partial structure registry." + worldEditHint(),
-                            exception.getCause());
-                }
-                activeLoad.checkRunning();
-                if (warmupClipboard == null) {
-                    throw new IllegalStateException(
-                            "Failed to load schematic " + warmupFile.getPath()
-                                    + "; refusing to initialize a partial structure registry." + worldEditHint());
-                }
-                clipboards.put(warmupFile, warmupClipboard);
-
-                Map<File, Clipboard> loaded = new ConcurrentHashMap<>();
-                List<String> failures = java.util.Collections.synchronizedList(
-                        new ArrayList<>());
-                List<File> remaining = schematicFiles.subList(
-                        1,
-                        schematicFiles.size());
-                List<Future<Void>> futures = new ArrayList<>(remaining.size());
-                for (File file : remaining) {
-                    futures.add(activeLoad.submit(() -> {
-                        Clipboard clipboard = loadClipboard(
-                                file,
-                                diskCache,
-                                activeLoad);
-                        activeLoad.checkRunning();
-                        if (clipboard != null) {
-                            loaded.put(file, clipboard);
-                        } else {
-                            failures.add(file.getPath());
-                        }
-                        activeLoad.checkRunning();
-                        return null;
-                    }));
-                }
-                for (Future<Void> future : futures) {
-                    try {
-                        future.get();
-                    } catch (ExecutionException exception) {
-                        if (exception.getCause() instanceof CancellationException cancellation) {
-                            throw cancellation;
-                        }
-                        failures.add(String.valueOf(exception.getCause()));
-                    }
-                }
-                if (!failures.isEmpty() || loaded.size() != remaining.size()) {
-                    String sample = failures.isEmpty()
-                            ? "unknown loader failure"
-                            : failures.get(0);
-                    throw new IllegalStateException(
-                            "Failed to load " + Math.max(
-                                    failures.size(),
-                                    remaining.size() - loaded.size())
-                                    + " of " + schematicFiles.size()
-                                    + " schematics; refusing to initialize a partial "
-                                    + "structure registry. First failure: " + sample + worldEditHint());
-                }
-                //Re-insert in sorted order rather than ConcurrentHashMap order.
-                for (File file : remaining) {
-                    Clipboard clipboard = loaded.get(file);
-                    if (clipboard != null) clipboards.put(file, clipboard);
-                }
-            }
-
-            activeLoad.checkRunning();
-            //The on-disk cache can only have gained entries for files that were actually read, and
-            //can only have lost relevance for files that have disappeared. A reload where neither
-            //happened has nothing to prune, so it does not re-hash the whole schematic set.
-            if (diskCache.filesRead() > 0 || forgotten > 0) {
-                diskCache.pruneStaleEntries(schematicFiles, activeLoad::checkRunning);
-            }
-            activeLoad.checkRunning();
-            activeLoad.finish(LOAD_SHUTDOWN_TIMEOUT);
-            completed = true;
-            return clipboards;
-        } catch (InterruptedException exception) {
-            Thread.currentThread().interrupt();
-            throw new IllegalStateException(
-                    "Schematic loading was interrupted; refusing to initialize "
-                            + "a partial structure registry.",
-                    exception);
-        } catch (CancellationException exception) {
-            throw new IllegalStateException(
-                    "Schematic loading was canceled because BetterStructures is shutting down.",
-                    exception);
-        } finally {
-            if (!completed) {
-                activeLoad.abort(LOAD_SHUTDOWN_TIMEOUT);
-            }
-        }
-    }
-
-    /**
-     * Reads one schematic, preferring the clipboard the previous load already produced for it.
-     * <p>
-     * Everything below this — the on-disk converted copy, and failing that WorldEdit and Mojang's
-     * data converter — only runs for files the in-memory cache cannot vouch for. The disk cache
-     * counts the files it genuinely read, because that is what decides whether it needs pruning
-     * afterwards.
-     */
-    private static Clipboard loadClipboard(File schematicFile,
-                                           SchematicDiskCache diskCache,
-                                           SchematicLoadCoordinator.ActiveLoad activeLoad) {
-        activeLoad.checkRunning();
-        Clipboard cached = clipboardCache.get(schematicFile);
-        activeLoad.checkRunning();
-        if (cached != null) {
-            return cached;
-        }
-
-        SchematicDiskCache.LoadedClipboard loaded = diskCache.loadWithIdentity(schematicFile);
-        Clipboard clipboard = loaded == null ? null : loaded.clipboard();
-        activeLoad.checkRunning();
-        if (clipboard != null) {
-            clipboardCache.put(schematicFile, loaded);
-            activeLoad.checkRunning();
-        }
-        return clipboard;
-    }
-
-    private static String worldEditHint() {
-        return WorldEditCompatibility.firstFault() == null
-                ? ""
-                : " WorldEdit failed to read it, see the WorldEdit warning above.";
     }
 
     public static SchematicConfigField getSchematicConfiguration(String filename) {
