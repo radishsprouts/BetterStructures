@@ -2,7 +2,7 @@
 
 - プラグイン名: BetterStructures 2.7.12（Folia 向け改造版。本番の jar は `BetterStructures.jar`）
 - 最終更新日: 2026-11-18
-- 資料が合っているコミット: f0d47e9
+- 資料が合っているコミット: 9f6ab86
 - この資料を使っている wiki のページ: kadosaba-site の wiki/structures.md
 
 > wiki(角鯖の公式サイトのプレイヤー向け Wiki)を書く時に、ソースを全部読み直さずに済ませるための資料。README・仕様書ではない。プレイヤーから見える事実だけを書く。本番の値は 2026-11-17 に `res_world/plugins/BetterStructures/` と `res_world/logs/latest.log` で確かめた（それ以降に入れた流量の設定項目と挙動の変更は、ソースで確かめたもので、本番では未確認）。
@@ -13,7 +13,7 @@
 
 WorldEdit・FastAsyncWorldEdit が無くても全機能が動く。入っていても、建造物を置く処理は常にプラグイン自身の仕組みで行い、WorldEdit は独自の仕組みで読めない図面を読む時の補助にだけ使う。本番の資源サーバーには WorldEdit は入っておらず、Folia 向けの独自の生成で置いている（起動ログ「WorldEdit not detected. Running Folia native structure generation engine.」）。
 
-生成が追いつかない時も、順番待ちの建造物を捨てずに順に処理するので、遅れても出る。置く処理に使う時間には上限があり、サーバーの遅れを検知したら自動で絞る。サーバーを止めた時に置く途中だった建造物を、次の起動で続きから置く仕組みもある（確認待ちの点を参照）。
+生成が追いつかない時も、順番待ちの建造物を捨てずに順に処理するので、遅れても出る。置く処理に使う時間には上限があり、サーバーの遅れを検知したら自動で絞る。サーバーを止めた時に置く途中だった建造物（通常の建造物もダンジョンも）は、次の起動で続きから置かれる（下の「停止をまたぐ再開」を参照。実機では未確認）。
 
 ## プレイヤーの使い方
 
@@ -87,6 +87,13 @@ WorldEdit・FastAsyncWorldEdit が無くても全機能が動く。入ってい�
 
 実体の無いパッケージ（プレミアム系など）は、生成されない。ダンジョンのモジュール生成は、モジュールが無く動かない（ログ「No start modules exist, you need to install or make modules first!」）。
 
+### 停止をまたぐ再開（管理者に見える事実。ソースで確かめたもので、実機では未確認）
+
+- 置いている途中の建造物の進み具合は、プラグインのデータフォルダ（`plugins/BetterStructures/`）の `paste-journal.json` に 30 秒ごとに書かれ、停止時にも最後の 1 回が書かれる。地形を調べる順番待ちも同じファイルに入る。
+- 次の起動で、図面の読み込みが済んだ後に、このファイルから続きが置かれる。通常の建造物もダンジョンも対象。
+- 図面を引けなかった記録（図面やワールドが無い等）は、捨てずにファイルに残り、コンソールに警告が出る（「貼り付けの記録 <図面名> の図面が見つかりません。記録は保持します。」など）。
+- ファイルが壊れていた時は `paste-journal.json.corrupt` に退避し、空から始める。
+
 ## プレイヤーに出るメッセージ（原文のまま）
 
 通常の遊びでは出ない。管理者に出るもの:
@@ -142,7 +149,7 @@ WorldEdit・FastAsyncWorldEdit が無くても全機能が動く。入ってい�
 - 建造物の中の宝箱の中身（建造物ごとにどの表が使われるか）と、敵が出るか
 - すでに歩いた場所（既存のチャンク）にも後から出るか
 - 建造物の中での破壊を制限する保護があるか（EliteMobs 用の保護の設定はあるが、EliteMobs が入っていない）
-- 停止をまたぐ再開: 記録の仕組み（30 秒ごとに書く・停止時に最後の 1 回を書く・起動時に続きから流す）はあるが、起動時にそれを呼ぶ配線は別の担当が入れている最中で、この資料の時点のソースでは確かめていない。記録ファイルの場所と名前も未確認
+- 停止をまたぐ再開: 配線と記録ファイルはソースで確かめた（根拠の欄）が、実機（停止して起動し直し、続きから置かれること）では未確認
 - 他のリージョンにまたがって消えていた建造物も出るようになった、という点: 計画で決まった内容で、コードの現物では確かめていない
 - 流量の設定項目が本番の `config.yml` に入った後の値（本番の jar は旧版）
 - 建造物の呼び名は、ファイル名からの意訳（ゲーム内で見た目を確かめていない）
@@ -153,14 +160,16 @@ WorldEdit・FastAsyncWorldEdit が無くても全機能が動く。入ってい�
 |---|---|
 | 出るワールド | `M:\minecraft\server\kado_server\res_world\plugins\BetterStructures\ValidWorlds.yml` |
 | 間隔・高さ・スポーン周辺の禁止 | `M:\minecraft\server\kado_server\res_world\plugins\BetterStructures\config.yml` |
-| WE が無くても動く・起動ログ | `src/main/java/com/magmaguy/betterstructures/worldedit/WorldEditCompatibility.java:88-91` |
+| WE が無くても動く・起動ログ | `src/main/java/com/magmaguy/betterstructures/integration/WorldEditCompatibility.java:87-90` |
 | 流量の設定項目・既定値・範囲 | `src/main/java/com/magmaguy/betterstructures/config/DefaultConfig.java:232-298`、`src/main/java/com/magmaguy/betterstructures/runtime/FlowSettings.java:36-48` |
 | 置く処理の割合の既定 0.2 | `src/main/java/com/magmaguy/betterstructures/config/DefaultConfig.java:56,133` |
 | 事前生成の設定と一時停止の条件 | `src/main/java/com/magmaguy/betterstructures/config/DefaultConfig.java:58-62,134-136`、`src/main/java/com/magmaguy/betterstructures/util/ChunkPregenerator.java:36-50` |
 | generateModules の案内（Folia） | `src/main/java/com/magmaguy/betterstructures/modules/WFCGenerator.java:110-115`、`src/main/java/com/magmaguy/betterstructures/commands/GenerateModulesCommand.java:25,34-45` |
-| reload のメッセージ・貼り付けを取り消さない | `src/main/java/com/magmaguy/betterstructures/BetterStructures.java:446,452,462-484,527-530,591` |
-| 初回設定メニューの権限確認 | `src/main/java/com/magmaguy/betterstructures/menus/BetterStructuresFirstTimeSetupMenu.java:85,133,152,176-178` |
+| reload のメッセージ・貼り付けを取り消さない | `src/main/java/com/magmaguy/betterstructures/BetterStructures.java:475-490,565-568,591,625` |
+| 初回設定メニューの権限確認 | `src/main/java/com/magmaguy/betterstructures/menus/BetterStructuresFirstTimeSetupMenu.java:31,85,133,152,176-178` |
 | 事前生成のメッセージ | `src/main/java/com/magmaguy/betterstructures/commands/PregenerateCommand.java:72-77`、`CancelPregenerateCommand.java:42` |
 | 権限 | `src/main/resources/plugin.yml:27-48`、各 `commands/*Command.java` の `setPermission` |
-| 停止をまたぐ再開の記録 | `src/main/java/com/magmaguy/betterstructures/paste/PasteJournal.java:11-18`、`paste/NativePasteEngine.java:22-23,131-177` |
+| 停止をまたぐ再開の配線 | `src/main/java/com/magmaguy/betterstructures/BetterStructures.java:111,195-197,205-225,465-467`（起動時に配線して、図面の読み込み後に `resumeFromJournal`） |
+| 記録ファイル名・書く間隔・停止時の最後の 1 回・壊れた時の退避・図面を引けない記録の保持 | `src/main/java/com/magmaguy/betterstructures/paste/NativePasteEngine.java:45,60-65,131-186,238-253`、`paste/PasteJournal.java:19-24,138-140` |
+| 通常の構造物・ダンジョンの図面の引き直し | `src/main/java/com/magmaguy/betterstructures/scan/ScanResume.java:38-42`、`modules/ModuleResume.java:44-66` |
 | 使われない建造物 | `M:\minecraft\server\kado_server\res_world\logs\latest.log`（2026-11-17 の起動時、`em_*` の警告） |
