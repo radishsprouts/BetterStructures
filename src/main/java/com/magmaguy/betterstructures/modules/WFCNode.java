@@ -178,8 +178,8 @@ public class WFCNode {
 
     private Location getLocalCenterLocation() {
         double y = lattice.getNodeSizeY() / 2d;
-        if (modulesContainer != null && modulesContainer.getClipboard() != null)
-            y = modulesContainer.getClipboard().getDimensions().y() / 2d;
+        if (modulesContainer != null && modulesContainer.getStructureSchematic() != null)
+            y = modulesContainer.getStructureSchematic().getHeight() / 2d;
         Vector3i worldPos = lattice.latticeToWorld(nodePosition).add((int) (lattice.getNodeSizeXZ() / 2d), (int) y, (int) (lattice.getNodeSizeXZ() / 2d));
         return new Location(world, worldPos.x, worldPos.y, worldPos.z);
     }
@@ -318,8 +318,6 @@ public class WFCNode {
 
             if (modulesContainer.getStructureSchematic() != null) {
                 ModulePasting.paste(modulesContainer.getStructureSchematic(), startLocation, modulesContainer.getRotation());
-            } else if (modulesContainer.getClipboard() != null) {
-                ModulePasting.paste(modulesContainer.getClipboard(), startLocation, modulesContainer.getRotation());
             }
         });
     }

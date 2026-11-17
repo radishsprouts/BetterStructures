@@ -2,13 +2,8 @@ package com.magmaguy.betterstructures.modules;
 
 import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfig;
 import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfigFields;
-import com.magmaguy.elitemobs.config.custombosses.CustomBossesConfig;
-import com.magmaguy.elitemobs.config.custombosses.CustomBossesConfigFields;
-import com.magmaguy.elitemobs.mobconstructor.custombosses.InstancedBossEntity;
 import org.bukkit.Location;
-import org.bukkit.NamespacedKey;
 import org.bukkit.World;
-import org.bukkit.entity.EntityType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,16 +12,18 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.mockbukkit.mockbukkit.MockBukkit;
 import org.mockbukkit.mockbukkit.ServerMock;
-import org.mockito.MockedConstruction;
 
 import java.nio.file.Path;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * ダンジョンの難易度帯と、目印の登録。EliteMobs の実体は読み込まず、{@link FakeEliteMobsHook} の裏で確かめる
+ * （EliteMobs と MagmaCore の版が合わない環境でも、この試験は動く）。
+ */
 class ModularWorldDifficultyTest {
     @TempDir Path folder;
     private World world;
@@ -85,70 +82,79 @@ class ModularWorldDifficultyTest {
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void spawnPoolsKeepOneLevelAndPassEachLocationsDifficultyWithoutMutatingTheBossDefinition() {
+    void instancedPoolBossesWaitForTheOwnerAndCarryEachLocationsDifficultyAndTheMaxLevel() {
         String poolId = "modular_difficulty_fixture.yml", bossId = "modular_difficulty_boss.yml";
         SpawnPoolsConfigFields pool = mock(SpawnPoolsConfigFields.class);
         when(pool.getPoolStrings()).thenReturn(List.of(bossId));
-        when(pool.getMinLevel()).thenReturn(1);
         when(pool.getMaxLevel()).thenReturn(40);
-        CustomBossesConfigFields boss = new CustomBossesConfigFields(bossId, EntityType.ZOMBIE, true, "Fixture", "7");
-        boss.setInstanced(true);
-        Map<String, CustomBossesConfigFields> bosses = (Map<String, CustomBossesConfigFields>) CustomBossesConfig.getCustomBosses();
         SpawnPoolsConfigFields previousPool = SpawnPoolsConfig.getSpawnPoolConfigFields().put(poolId, pool);
-        CustomBossesConfigFields previousBoss = bosses.put(bossId, boss);
+        FakeEliteMobsHook hook = new FakeEliteMobsHook(true, Set.of(bossId), Set.of(bossId));
         Location center = new Location(world, 400, 20, -800);
-        ModularWorld generated = new ModularWorld(world, folder.toFile(), List.of(), center, 384);
+        ModularWorld generated = new ModularWorld(world, folder.toFile(), List.of(), center, 384, hook);
         List<Location> positions = List.of(center.clone().add(150, 30, 150), center.clone().add(90, -5, 0),
                 center.clone().add(-30, 150, 30));
-        List<List<?>> constructorArguments = new ArrayList<>();
-        // This is the external EliteMobs boundary. BS's sign parsing, deferred pool routing and geometry run unchanged.
-        // EliteMobs separately tests its real constructor and difficulty-owned combat state.
-        try (MockedConstruction<InstancedBossEntity> captured = mockConstruction(InstancedBossEntity.class,
-                (entity, context) -> constructorArguments.add(context.arguments()))) {
+        try {
             for (Location position : positions)
                 generated.spawnOtherEntitiesAt(new ModulePasting.InterpretedSign(position, List.of("[pool:modular_difficulty_fixture]")));
-            assertTrue(captured.constructed().isEmpty(), "Instance mobs must wait for the completed world's owner to spawn them");
+            assertTrue(hook.instancedSpawned.isEmpty(), "Instance mobs must wait for the completed world's owner to spawn them");
+            assertTrue(hook.poolSpawned.isEmpty());
 
-            List<InstancedBossEntity> spawned = generated.spawnInstancedEntities();
+            List<?> spawned = generated.spawnInstancedEntities();
 
             assertEquals(3, spawned.size());
-            for (int index = 0; index < spawned.size(); index++) {
-                assertEquals(List.of(boss, positions.get(index).clone().add(.5, 0, .5), 40, Integer.toString(index)), constructorArguments.get(index));
-                verify(spawned.get(index)).spawn(true);
-                verify(spawned.get(index)).addCustomData(new NamespacedKey("betterstructures", "spawnpool"), poolId);
+            for (int index = 0; index < positions.size(); index++) {
+                FakeEliteMobsHook.Instanced call = hook.instancedSpawned.get(index);
+                assertEquals(positions.get(index).clone().add(.5, 0, .5), call.location());
+                assertEquals(bossId, call.bossFilename());
+                assertEquals(40, call.level());
+                assertEquals(Integer.toString(index), call.difficultyId());
+                assertEquals(poolId, call.pool());
+                assertSame(call, spawned.get(index));
             }
-            assertEquals(7, boss.getLevel(), "Spawning difficulty variants must not rewrite the shared boss definition");
-            assertTrue(boss.isInstanced());
         } finally {
             if (previousPool == null) SpawnPoolsConfig.getSpawnPoolConfigFields().remove(poolId);
             else SpawnPoolsConfig.getSpawnPoolConfigFields().put(poolId, previousPool);
-            if (previousBoss == null) bosses.remove(bossId);
-            else bosses.put(bossId, previousBoss);
         }
     }
 
     @Test
-    @SuppressWarnings("unchecked")
     void immediatePoolSpawnsUseTheBlockCenterWithoutMovingTheAuthoredMarker() {
         String poolId = "center_fixture.yml", bossId = "center_boss.yml";
         SpawnPoolsConfigFields pool = mock(SpawnPoolsConfigFields.class);
         when(pool.getPoolStrings()).thenReturn(List.of(bossId));
-        CustomBossesConfigFields boss = new CustomBossesConfigFields(bossId, EntityType.VINDICATOR, true, "Fixture", "7");
-        Map<String, CustomBossesConfigFields> bosses = (Map<String, CustomBossesConfigFields>) CustomBossesConfig.getCustomBosses();
         SpawnPoolsConfigFields previousPool = SpawnPoolsConfig.getSpawnPoolConfigFields().put(poolId, pool);
-        CustomBossesConfigFields previousBoss = bosses.put(bossId, boss);
+        FakeEliteMobsHook hook = new FakeEliteMobsHook(true, Set.of(bossId), Set.of());
         Location marker = new Location(world, -120, 16, 41);
-        ModularWorld generated = new ModularWorld(world, folder.toFile(), List.of(), new Location(world, 0, 16, 0), 384);
-        try (var captured = mockConstruction(com.magmaguy.elitemobs.mobconstructor.custombosses.CustomBossEntity.class)) {
+        ModularWorld generated = new ModularWorld(world, folder.toFile(), List.of(),
+                new Location(world, 0, 16, 0), 384, hook);
+        try {
             generated.spawnOtherEntitiesAt(new ModulePasting.InterpretedSign(marker, List.of("[pool:center_fixture]")));
-            verify(captured.constructed().getFirst()).spawn(new Location(world, -119.5, 16, 41.5), true);
+
+            assertEquals(List.of(new FakeEliteMobsHook.Spawn(new Location(world, -119.5, 16, 41.5), bossId)),
+                    hook.poolSpawned);
             assertEquals(new Location(world, -120, 16, 41), marker);
         } finally {
             if (previousPool == null) SpawnPoolsConfig.getSpawnPoolConfigFields().remove(poolId);
             else SpawnPoolsConfig.getSpawnPoolConfigFields().put(poolId, previousPool);
-            if (previousBoss == null) bosses.remove(bossId);
-            else bosses.put(bossId, previousBoss);
+        }
+    }
+
+    @Test
+    void withoutEliteMobsNothingIsSpawnedAndNothingFails() {
+        String poolId = "absent_fixture.yml", bossId = "absent_boss.yml";
+        SpawnPoolsConfigFields pool = mock(SpawnPoolsConfigFields.class);
+        when(pool.getPoolStrings()).thenReturn(List.of(bossId));
+        SpawnPoolsConfigFields previousPool = SpawnPoolsConfig.getSpawnPoolConfigFields().put(poolId, pool);
+        ModularWorld generated = new ModularWorld(world, folder.toFile(), List.of(),
+                new Location(world, 0, 16, 0), 384, com.magmaguy.betterstructures.integration.EliteMobsHook.none());
+        try {
+            generated.spawnOtherEntitiesAt(new ModulePasting.InterpretedSign(
+                    new Location(world, 1, 16, 1), List.of("[pool:absent_fixture]")));
+
+            assertTrue(generated.spawnInstancedEntities().isEmpty());
+        } finally {
+            if (previousPool == null) SpawnPoolsConfig.getSpawnPoolConfigFields().remove(poolId);
+            else SpawnPoolsConfig.getSpawnPoolConfigFields().put(poolId, previousPool);
         }
     }
 
@@ -163,5 +169,16 @@ class ModularWorldDifficultyTest {
         assertEquals(List.of(marker), generated.getChestLocations());
         assertEquals(List.of(marker), generated.getBarrelLocations());
         assertEquals(new Location(world, -120, 16, 41), marker);
+    }
+
+    @Test
+    void trappedChestsAreRegisteredSeparatelyFromChests() {
+        Location marker = new Location(world, 5, 16, 6);
+        ModularWorld generated = new ModularWorld(world, folder.toFile(), List.of(
+                new ModulePasting.InterpretedSign(marker, List.of("[trapped_chest]"))),
+                new Location(world, 0, 16, 0), 384);
+
+        assertEquals(List.of(marker), generated.getTrappedChestLocations());
+        assertTrue(generated.getChestLocations().isEmpty());
     }
 }

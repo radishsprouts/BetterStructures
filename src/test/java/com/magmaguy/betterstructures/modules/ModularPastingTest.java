@@ -3,20 +3,25 @@ package com.magmaguy.betterstructures.modules;
 import com.magmaguy.betterstructures.MetadataHandler;
 import com.magmaguy.betterstructures.api.WorldGenerationFinishEvent;
 import com.magmaguy.betterstructures.config.modulegenerators.ModuleGeneratorsConfigFields;
-import com.magmaguy.betterstructures.worldedit.Schematic;
-import com.sk89q.worldedit.extent.clipboard.Clipboard;
-import com.sk89q.worldedit.math.BlockVector3;
-import com.sk89q.worldedit.world.block.BaseBlock;
-import com.sk89q.worldedit.world.block.BlockState;
-import com.sk89q.worldedit.world.block.BlockType;
-import com.sk89q.worldedit.world.registry.BlockMaterial;
+import com.magmaguy.betterstructures.integration.EliteMobsHook;
+import com.magmaguy.betterstructures.paste.MarkerHandler;
+import com.magmaguy.betterstructures.paste.PasteEngine;
+import com.magmaguy.betterstructures.paste.PasteRequest;
+import com.magmaguy.betterstructures.paste.PasteResult;
+import com.magmaguy.betterstructures.runtime.RuntimeSettings;
+import com.magmaguy.betterstructures.runtime.Services;
+import com.magmaguy.betterstructures.runtime.WorkerPool;
+import com.magmaguy.betterstructures.schematic.model.StructureBlock;
+import com.magmaguy.betterstructures.schematic.model.StructureSchematic;
+import com.magmaguy.betterstructures.schematic.sign.SignTextParser;
+import org.bukkit.DyeColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.entity.EntityType;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.entity.EntityType;
-import org.bukkit.util.BoundingBox;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.joml.Vector3i;
 import org.junit.jupiter.api.AfterEach;
@@ -25,10 +30,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
-import org.junit.jupiter.params.provider.ValueSource;
 import org.mockbukkit.mockbukkit.MockBukkit;
 import org.mockbukkit.mockbukkit.ServerMock;
-import org.mockbukkit.mockbukkit.world.ChunkMock;
 import org.mockbukkit.mockbukkit.world.WorldMock;
 
 import java.nio.file.Path;
@@ -36,131 +39,144 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-import java.util.logging.Handler;
-import java.util.logging.Level;
-import java.util.logging.LogRecord;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
-/** Real modular queue, scheduler, chunk gate, Bukkit writes, completion event and cancellation. */
+/**
+ * ダンジョンの貼り付け: 実際の ModulePasting が、偽の PasteEngine へ正しい依頼を出し、目印を ModularWorld へ登録し、
+ * 完了を1回だけ知らせることを確かめる。WorldEdit の型は使わない。
+ */
 class ModularPastingTest {
     @TempDir Path folder;
     private ServerMock server;
     private JavaPlugin plugin;
-    private CountingWorld world;
-    private final List<WorldGenerationFinishEvent> completions = new ArrayList<>();
-    private final List<LogRecord> warnings = new ArrayList<>();
-    private Handler logCapture;
+    private World world;
+    private FakePasteEngine engine;
+    private final List<WorldGenerationFinishEvent> completions = new CopyOnWriteArrayList<>();
 
     @BeforeEach
     void open() {
-        server = MockBukkit.mock(new ServerMock() {
-            @Override public BlockData createBlockData(String data) {
-                BlockData block = super.createBlockData(data);
-                if (block.getMaterial() != Material.GLOWSTONE && block.getMaterial() != Material.SEA_LANTERN) return block;
-                // MockBukkit omits emission metadata; these genuine luminous blocks use the Bukkit paste phase.
-                BlockData luminous = spy(block);
-                doReturn(15).when(luminous).getLightEmission();
-                return luminous;
-            }
-        });
+        server = MockBukkit.mock();
         plugin = MockBukkit.createMockPlugin("ModularPasteFixture");
         MetadataHandler.PLUGIN = plugin;
-        world = new CountingWorld();
-        world.setName("modular-paste-fixture");
-        server.addWorld(world);
+        WorldMock fixture = new SpawnTolerantWorld();
+        fixture.setName("modular-paste-fixture");
+        server.addWorld(fixture);
+        world = fixture;
+        engine = new FakePasteEngine();
+        Services.setPasteEngine(engine);
         server.getPluginManager().registerEvents(new Listener() {
             @EventHandler public void finished(WorldGenerationFinishEvent event) { completions.add(event); }
         }, plugin);
-        logCapture = new Handler() {
-            @Override public void publish(LogRecord record) {
-                if (record.getLevel().intValue() >= Level.WARNING.intValue()) warnings.add(record);
-            }
-            @Override public void flush() { }
-            @Override public void close() { }
-        };
-        server.getLogger().addHandler(logCapture);
     }
 
     @AfterEach
     void close() {
-        Schematic.shutdown();
-        if (logCapture != null) server.getLogger().removeHandler(logCapture);
+        Services.clear();
+        WorkerPool.shutdownInstance();
         MetadataHandler.PLUGIN = null;
         MockBukkit.unmock();
     }
 
+    // ---- 依頼の中身 ----
+
     @ParameterizedTest(name = "{displayName} rotation={0}")
     @CsvSource({"0,0,0,1,0,0,1", "90,1,0,1,1,0,0", "180,1,1,0,1,1,0", "270,0,1,0,0,1,1"})
-    void naturalPasteWritesRotatedBlocksAndCarvesAir(int rotation,
+    void rotatedSchematicKeepsTheOldOrientationAndDropsBarrierCells(int rotation,
             int airX, int airZ, int glowX, int glowZ, int barrierX, int barrierZ) {
         Location origin = new Location(world, -17, 70, 31);
-        for (int x = 0; x < 2; x++) for (int z = 0; z < 2; z++)
-            world.getBlockAt(origin.getBlockX() + x, 70, origin.getBlockZ() + z).setType(Material.DIRT);
-        Map<BlockVector3, BaseBlock> blocks = Map.of(
-                BlockVector3.at(3, 4, 5), block("air", true),
-                BlockVector3.at(4, 4, 5), block("glowstone", false),
-                BlockVector3.at(3, 4, 6), block("barrier", false),
-                BlockVector3.at(4, 4, 6), block("sea_lantern", false));
-        enqueue(false, origin, rotation, BlockVector3.at(3, 4, 5), BlockVector3.at(4, 4, 6), blocks);
+        engine.autoComplete = true;
+        start(false, origin, rotation, square(), 2, 16, EliteMobsHook.none());
 
-        drain();
+        PasteRequest request = awaitRequests(1).getFirst();
 
-        assertEquals(Material.AIR, at(origin, airX, airZ));
-        assertEquals(Material.GLOWSTONE, at(origin, glowX, glowZ));
-        assertEquals(Material.DIRT, at(origin, barrierX, barrierZ), "Barrier markers must not overwrite terrain");
-        assertEquals(1, countMaterial(origin, Material.SEA_LANTERN),
-                "The fourth source cell must reach its distinct rotated destination");
-        assertTrue(completions.isEmpty(), "Natural-world pastes must not announce a generated instance");
-        assertTrue(warnings.isEmpty(), () -> "Unexpected paste warnings: " + warnings);
+        StructureSchematic pasted = request.schematic();
+        assertEquals(Material.AIR, pasted.getBlockData(airX, 0, airZ).getMaterial(),
+                "既存のワールドでは空気も貼る（空洞を掘る）");
+        assertEquals(Material.GLOWSTONE, pasted.getBlockData(glowX, 0, glowZ).getMaterial());
+        assertNull(pasted.getBlockData(barrierX, 0, barrierZ), "障壁のブロックは地形を上書きしない");
+        int lanterns = 0;
+        for (int x = 0; x < 2; x++)
+            for (int z = 0; z < 2; z++) {
+                BlockData data = pasted.getBlockData(x, 0, z);
+                if (data != null && data.getMaterial() == Material.SEA_LANTERN) lanterns++;
+            }
+        assertEquals(1, lanterns, "4つめのブロックは別の行き先に届く");
+        assertEquals(rotation, request.rotationDegrees());
+        assertEquals(origin, request.baseLocation());
+        assertEquals("fixture_module", request.schematicName());
+        assertEquals(Material.STONE, request.bedrockReplacement(), "岩盤は STONE に置き換える");
+        assertEquals(RuntimeSettings.get().wfcWindowChunks(), request.windowChunks());
+        assertFalse(request.announce());
+        assertTrue(completions.isEmpty(), "自然生成の貼り付けは、生成ワールドの完了を知らせない");
     }
 
     @Test
-    void voidPasteSkipsAirAndBarrierChunkRequestsAndCompletesOnce() {
+    void voidWorldDropsAirAndBarrierAndCompletesOnceAfterEveryModuleFinished() {
         Location origin = new Location(world, 0, 70, 0);
-        BaseBlock air = block("air", true), barrier = block("barrier", false);
-        Map<BlockVector3, BaseBlock> blocks = new HashMap<>();
-        for (int x = 0; x <= 32; x++) blocks.put(BlockVector3.at(x, 0, 0), x < 16 ? air : barrier);
-        blocks.put(BlockVector3.at(32, 0, 0), block("glowstone", false));
-        world.getBlockAt(0, 70, 0).setType(Material.DIRT);
-        enqueue(true, origin, 0, BlockVector3.ZERO, BlockVector3.at(32, 0, 0), blocks);
+        start(true, origin, 0, square(), 2, 16, EliteMobsHook.none());
 
-        drain();
+        PasteRequest request = awaitRequests(1).getFirst();
         server.getScheduler().performTicks(3);
 
-        assertEquals(Material.DIRT, world.getBlockAt(0, 70, 0).getType(), "Void-world air must not be written");
-        assertEquals(Material.GLOWSTONE, world.getBlockAt(32, 70, 0).getType());
-        assertEquals(List.of("2,0"), world.requestedChunks, "Empty and barrier-only chunks must not be requested");
+        assertNull(request.schematic().getBlockData(0, 0, 0), "虚無のワールドでは空気を貼らない");
+        assertNull(request.schematic().getBlockData(0, 0, 1), "障壁を貼らない");
+        assertEquals(Material.GLOWSTONE, request.schematic().getBlockData(1, 0, 0).getMaterial());
+        assertTrue(completions.isEmpty(), "貼り付けが終わるまで完了を知らせない");
+
+        engine.completeAll(PasteResult.Outcome.COMPLETED);
+        awaitCompletion();
+
         assertEquals(1, completions.size());
-        assertSame(world, completions.getFirst().getModularWorld().getWorld());
-        assertEquals(new Location(world, 8, 62, 8), completions.getFirst().getModularWorld().getCenter());
-        assertEquals(48D, completions.getFirst().getModularWorld().getHorizontalSize());
-        assertTrue(warnings.isEmpty(), () -> "Unexpected paste warnings: " + warnings);
+        ModularWorld generated = completions.getFirst().getModularWorld();
+        assertSame(world, generated.getWorld());
+        assertEquals(new Location(world, 8, 62, 8), generated.getCenter());
+        assertEquals(48D, generated.getHorizontalSize());
     }
 
     @Test
-    void unloadingAnOwnedWorldCancelsQueuedPasteWithoutFailureOrCompletion() {
-        enqueue(true, new Location(world, 0, 70, 0), 0, BlockVector3.ZERO, BlockVector3.ZERO,
-                Map.of(BlockVector3.ZERO, block("glowstone", false)));
+    void completionWaitsForEveryModuleOfTheDungeon() {
+        List<WFCNode> nodes = List.of(
+                node(new Vector3i(0, 0, 0), square(), 0, 2, 16),
+                node(new Vector3i(1, 0, 0), square(), 90, 2, 16));
+        new ModulePasting(world, folder.toFile(), new ArrayDeque<>(nodes), "",
+                new Location(world, 8, 62, 8), config(true, 2, 16), EliteMobsHook.none());
+
+        awaitRequests(2);
+        engine.handles.getFirst().finish(PasteResult.Outcome.COMPLETED);
+        server.getScheduler().performTicks(3);
+        assertTrue(completions.isEmpty(), "1つ残っている間は完了を知らせない");
+
+        engine.handles.get(1).finish(PasteResult.Outcome.COMPLETED);
+        awaitCompletion();
+        assertEquals(1, completions.size());
+    }
+
+    @Test
+    void unloadingAnOwnedWorldDoesNotAnnounceCompletion() {
+        start(true, new Location(world, 0, 70, 0), 0, square(), 2, 16, EliteMobsHook.none());
+        awaitRequests(1);
         assertTrue(server.unloadWorld(world, false));
 
-        drain();
+        engine.completeAll(PasteResult.Outcome.CANCELLED);
+        server.getScheduler().performTicks(5);
 
-        assertTrue(completions.isEmpty(), "A cancelled world's partial paste must never announce completion");
-        assertTrue(warnings.isEmpty(), () -> "Expected world cancellation logged a paste failure: " + warnings);
-        assertTrue(world.requestedChunks.isEmpty());
+        assertTrue(completions.isEmpty(), "消えたワールドの途中の貼り付けは、完了を知らせない");
     }
 
     @ParameterizedTest(name = "{displayName} moduleWidth={0}")
     @CsvSource({"32,-2,47,160", "33,-1.5,47.5,165"})
     void completionRetainsTheTranslatedGeneratorGeometry(int moduleWidth, double centerX, double centerZ, double size) {
-        enqueue(true, new Location(world, -17.8, 70.4, 31.75), 0, BlockVector3.ZERO, BlockVector3.ZERO,
-                Map.of(BlockVector3.ZERO, block("glowstone", false)), 3, moduleWidth);
+        engine.autoComplete = true;
+        start(true, new Location(world, -17.8, 70.4, 31.75), 0, square(), 3, moduleWidth, EliteMobsHook.none());
 
-        drain();
+        awaitRequests(1);
+        awaitCompletion();
 
         assertEquals(1, completions.size());
         ModularWorld generated = completions.getFirst().getModularWorld();
@@ -168,125 +184,215 @@ class ModularPastingTest {
         assertEquals(size, generated.getHorizontalSize());
     }
 
-    @ParameterizedTest(name = "{displayName} rotation={0}")
-    @ValueSource(ints = {0, 90, 180, 270})
-    void markerSpawnKeepsItsFeetAtAuthoredHeightAndItsBodyClearOfAnAdjacentWall(int rotation) {
-        Location marker = new Location(world, -120, 70, 41);
-        world.getBlockAt(-121, 70, 41).setType(Material.STONE);
-        world.getBlockAt(-121, 71, 41).setType(Material.STONE);
-        BaseBlock sign = block("oak_sign", false);
-        when(sign.getNbtData()).thenReturn(new com.sk89q.jnbt.CompoundTag(Map.of(
-                "Text1", new com.sk89q.jnbt.StringTag("{\"text\":\"[spawn]\"}"),
-                "Text2", new com.sk89q.jnbt.StringTag("{\"text\":\"VINDICATOR\"}"),
-                "Text3", new com.sk89q.jnbt.StringTag("{\"text\":\"\"}"),
-                "Text4", new com.sk89q.jnbt.StringTag("{\"text\":\"\"}"))));
-        enqueue(false, marker, rotation, BlockVector3.ZERO, BlockVector3.ZERO, Map.of(BlockVector3.ZERO, sign));
+    // ---- 目印 ----
 
-        drain();
+    @Test
+    void everyDungeonMarkerIsRegisteredInTheModularWorldAndItsSignBecomesAir() {
+        start(true, new Location(world, 0, 70, 0), 0, square(), 2, 16, EliteMobsHook.none());
+        MarkerHandler handler = awaitRequests(1).getFirst().markerHandler();
 
-        var entities = world.getEntities().stream().filter(entity -> entity.getType() == EntityType.VINDICATOR).toList();
-        assertEquals(1, entities.size());
-        var entity = entities.getFirst();
-        assertEquals(new Location(world, -119.5, 70, 41.5), entity.getLocation());
-        BoundingBox wall = new BoundingBox(-121, 70, 41, -120, 72, 42);
-        assertFalse(entity.getBoundingBox().overlaps(wall), "The real entity bounding box must clear the adjacent solid wall");
-        assertTrue(entity.getBoundingBox().clone().shift(-.5, 0, -.5).overlaps(wall),
-                "The original block-corner spawn intersects this same wall");
-        assertEquals(Material.AIR, marker.getBlock().getType());
-        assertTrue(warnings.isEmpty(), () -> "Unexpected paste warnings: " + warnings);
+        placeMarker(handler, 10, 70, 10, "[spawn]");
+        placeMarker(handler, 11, 70, 10, "[chest]");
+        placeMarker(handler, 12, 70, 10, "[trapped_chest]");
+        placeMarker(handler, 13, 70, 10, "[barrel]");
+        placeMarker(handler, 14, 70, 10, "[exit]", "elevator_up", "elevator_down");
+
+        engine.completeAll(PasteResult.Outcome.COMPLETED);
+        awaitCompletion();
+        ModularWorld generated = completions.getFirst().getModularWorld();
+
+        assertEquals(List.of(new Location(world, 10.5, 70, 10.5)), generated.getSpawnLocations());
+        assertEquals(List.of(new Location(world, 11, 70, 10)), generated.getChestLocations());
+        assertEquals(List.of(new Location(world, 12, 70, 10)), generated.getTrappedChestLocations());
+        assertEquals(List.of(new Location(world, 13, 70, 10)), generated.getBarrelLocations());
+        assertEquals(1, generated.getExitLocations().size());
+        assertEquals(Material.AIR, world.getBlockAt(10, 70, 10).getType());
+        assertEquals(Material.AIR, world.getBlockAt(13, 70, 10).getType());
+        assertEquals(Material.AIR, world.getBlockAt(14, 70, 10).getType());
+        assertEquals(Material.CHEST, world.getBlockAt(11, 70, 10).getType(), "[chest] は宝箱を置く");
+        assertEquals(Material.TRAPPED_CHEST, world.getBlockAt(12, 70, 10).getType());
     }
 
-    private void enqueue(boolean generatedWorld, Location origin, int rotation, BlockVector3 low, BlockVector3 high,
-                         Map<BlockVector3, BaseBlock> source) {
-        enqueue(generatedWorld, origin, rotation, low, high, source, 2, 16);
+    @Test
+    void markerHandlerRecognizesOnlyMarkerSigns() {
+        start(true, new Location(world, 0, 70, 0), 0, square(), 2, 16, EliteMobsHook.none());
+        MarkerHandler handler = awaitRequests(1).getFirst().markerHandler();
+
+        assertTrue(handler.isMarker(signBlock("[SPAWN]")), "大文字小文字は区別しない");
+        assertTrue(handler.isMarker(signBlock("", "[pool:crypt]")));
+        assertFalse(handler.isMarker(signBlock("hello")));
+        assertFalse(handler.isMarker(signBlock("", "", "", "")));
+        assertFalse(handler.isMarker(new StructureBlock(0, 0, 0, Material.STONE.createBlockData(), null, null)));
+        assertEquals(MarkerHandler.PlainSignPolicy.REMOVE, handler.plainSignPolicy());
     }
 
-    private void enqueue(boolean generatedWorld, Location origin, int rotation, BlockVector3 low, BlockVector3 high,
-                         Map<BlockVector3, BaseBlock> source, int radius, int moduleSize) {
-        Clipboard clipboard = mock(Clipboard.class);
-        when(clipboard.getMinimumPoint()).thenReturn(low);
-        when(clipboard.getMaximumPoint()).thenReturn(high);
-        when(clipboard.getOrigin()).thenReturn(low);
-        when(clipboard.getEntities()).thenReturn(List.of());
-        when(clipboard.getFullBlock(any())).thenAnswer(call -> {
-            BaseBlock value = source.get(call.getArgument(0));
-            if (value == null) throw new AssertionError("Read outside source clipboard: " + call.getArgument(0));
-            return value;
-        });
+    @Test
+    void vanillaSpawnMarkerSpawnsTheMobAtTheBlockCenter() {
+        start(false, new Location(world, -120, 70, 41), 0, square(), 2, 16, EliteMobsHook.none());
+        MarkerHandler handler = awaitRequests(1).getFirst().markerHandler();
+
+        placeMarker(handler, -120, 70, 41, "[spawn]", "VINDICATOR");
+
+        var found = world.getEntities().stream().filter(entity -> entity.getType() == EntityType.VINDICATOR).toList();
+        assertEquals(1, found.size());
+        assertEquals(new Location(world, -119.5, 70, 41.5), found.getFirst().getLocation());
+        assertEquals(Material.AIR, world.getBlockAt(-120, 70, 41).getType());
+    }
+
+    @Test
+    void bossSignsSpawnThroughTheEliteMobsHookWhenTheDungeonCreatesNoWorld() {
+        FakeEliteMobsHook hook = new FakeEliteMobsHook(true, Set.of(), Set.of());
+        start(false, new Location(world, 0, 70, 0), 0, square(), 2, 16, hook);
+        MarkerHandler handler = awaitRequests(1).getFirst().markerHandler();
+
+        placeMarker(handler, 5, 70, 6, "[elitemobs]", "boss_one.yml");
+
+        assertEquals(List.of(new FakeEliteMobsHook.Spawn(new Location(world, 5.5, 70, 6.5), "boss_one.yml")), hook.spawned);
+    }
+
+    @Test
+    void bossSignsAreSkippedWithoutEliteMobs() {
+        FakeEliteMobsHook hook = new FakeEliteMobsHook(false, Set.of(), Set.of());
+        start(false, new Location(world, 0, 70, 0), 0, square(), 2, 16, hook);
+        MarkerHandler handler = awaitRequests(1).getFirst().markerHandler();
+
+        assertDoesNotThrow(() -> placeMarker(handler, 5, 70, 6, "[elitemobs]", "boss_one.yml"));
+
+        assertTrue(hook.spawned.isEmpty());
+        assertEquals(Material.AIR, world.getBlockAt(5, 70, 6).getType());
+    }
+
+    // ---- 部品 ----
+
+    private void start(boolean generatedWorld, Location origin, int rotation, StructureSchematic schematic,
+                       int radius, int moduleSize, EliteMobsHook hook) {
+        WFCNode node = node(new Vector3i(), schematic, rotation, radius, moduleSize);
+        // 格子の原点のセルは、生成の起点から半分のモジュールだけ西・北・上にずれる。
+        Location generatorOrigin = origin.clone().add(moduleSize / 2, -8, moduleSize / 2);
+        new ModulePasting(world, folder.toFile(), new ArrayDeque<>(List.of(node)), "", generatorOrigin,
+                config(generatedWorld, radius, moduleSize), hook);
+    }
+
+    private ModuleGeneratorsConfigFields config(boolean generatedWorld, int radius, int moduleSize) {
         ModuleGeneratorsConfigFields config = mock(ModuleGeneratorsConfigFields.class);
         when(config.isWorldGeneration()).thenReturn(generatedWorld);
         when(config.getRadius()).thenReturn(radius);
         when(config.getModuleSizeXZ()).thenReturn(moduleSize);
+        return config;
+    }
+
+    private WFCNode node(Vector3i position, StructureSchematic schematic, int rotation, int radius, int moduleSize) {
+        ModuleGeneratorsConfigFields config = config(false, radius, moduleSize);
         WFCGenerator generator = mock(WFCGenerator.class);
         when(generator.getModuleGeneratorsConfigFields()).thenReturn(config);
         ModulesContainer module = mock(ModulesContainer.class);
-        when(module.getClipboard()).thenReturn(clipboard);
+        when(module.getStructureSchematic()).thenReturn(schematic);
         when(module.getRotation()).thenReturn(rotation);
+        when(module.getClipboardFilename()).thenReturn("fixture_module");
         WFCLattice lattice = new WFCLattice(radius, moduleSize, 16, 0, 0);
-        WFCNode node = new WFCNode(new Vector3i(), world, lattice, new HashMap<>(), generator);
+        WFCNode node = new WFCNode(position, world, lattice, new HashMap<>(), generator);
         node.setModulesContainer(module);
-        // Lattice origin cells begin half a module west/north and half a module above the generator origin.
-        Location generatorOrigin = origin.clone().add(moduleSize / 2, -8, moduleSize / 2);
-        new ModulePasting(world, folder.toFile(), new ArrayDeque<>(List.of(node)), "", generatorOrigin, config);
+        return node;
     }
 
-    private void drain() {
-        for (int tick = 0; tick < 100 && server.getScheduler().getPendingTasks().stream()
-                .anyMatch(task -> task.getOwner() == plugin); tick++) server.getScheduler().performOneTick();
-        assertTrue(server.getScheduler().getPendingTasks().stream().noneMatch(task -> task.getOwner() == plugin),
-                "The production paste queue did not drain");
+    /** 2x2 の図面。(0,0)=空気、(1,0)=グロウストーン、(0,1)=障壁、(1,1)=シーランタン。 */
+    private static StructureSchematic square() {
+        BlockData[] blocks = new BlockData[4];
+        blocks[0] = Material.AIR.createBlockData();
+        blocks[1] = Material.GLOWSTONE.createBlockData();
+        blocks[2] = Material.BARRIER.createBlockData();
+        blocks[3] = Material.SEA_LANTERN.createBlockData();
+        return new StructureSchematic((short) 2, (short) 1, (short) 2, 0, 0, 0, blocks,
+                new HashMap<>(), new HashMap<>(), new ArrayList<>());
     }
 
-    private Material at(Location origin, int x, int z) {
-        return world.getBlockAt(origin.getBlockX() + x, origin.getBlockY(), origin.getBlockZ() + z).getType();
+    private static StructureBlock signBlock(String... lines) {
+        String[] front = new String[4];
+        for (int i = 0; i < 4; i++) front[i] = i < lines.length ? lines[i] : "";
+        SignTextParser.ParsedSign parsed = new SignTextParser.ParsedSign(
+                front, new String[]{"", "", "", ""}, DyeColor.BLACK, DyeColor.BLACK, false, false, false);
+        return new StructureBlock(0, 0, 0, Material.OAK_SIGN.createBlockData(), null, parsed);
     }
 
-    private long countMaterial(Location origin, Material material) {
-        long count = 0;
-        for (int x = 0; x < 2; x++) for (int z = 0; z < 2; z++) if (at(origin, x, z) == material) count++;
-        return count;
+    private void placeMarker(MarkerHandler handler, int x, int y, int z, String... lines) {
+        world.getBlockAt(x, y, z).setType(Material.OAK_SIGN);
+        StructureBlock block = signBlock(lines);
+        assertTrue(handler.isMarker(block));
+        handler.handleMarker(world, x, y, z, block);
     }
 
-    private static BaseBlock block(String id, boolean air) {
-        BlockMaterial material = mock(BlockMaterial.class);
-        when(material.isAir()).thenReturn(air);
-        BlockType type = mock(BlockType.class);
-        when(type.id()).thenReturn("minecraft:" + id);
-        when(type.getMaterial()).thenReturn(material);
-        when(type.getProperties()).thenReturn(List.of());
-        BlockState state = mock(BlockState.class);
-        when(state.getBlockType()).thenReturn(type);
-        when(state.getAsString()).thenReturn("minecraft:" + id);
-        BaseBlock block = mock(BaseBlock.class);
-        when(block.getBlockType()).thenReturn(type);
-        when(block.toImmutableState()).thenReturn(state);
-        return block;
+    private List<PasteRequest> awaitRequests(int count) {
+        await(() -> engine.requests.size() >= count, "貼り付けの依頼が " + count + " 件に届かなかった");
+        return List.copyOf(engine.requests);
     }
 
-    private static final class CountingWorld extends WorldMock {
-        private final List<String> requestedChunks = new ArrayList<>();
+    /** 完了の通知はスケジューラ経由で届くので、tick を進めながら待つ。 */
+    private void awaitCompletion() {
+        await(() -> {
+            server.getScheduler().performOneTick();
+            return !completions.isEmpty();
+        }, "完了の通知が届かなかった");
+    }
 
-        @Override public org.bukkit.entity.Entity spawnEntity(Location location, EntityType type) {
+    private static void await(BooleanSupplier condition, String message) {
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        while (System.nanoTime() < deadline) {
+            if (condition.getAsBoolean()) return;
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                fail(message);
+            }
+        }
+        fail(message);
+    }
+
+    /** 依頼を記録し、完了を試験が決める偽の貼り付けエンジン。 */
+    private static final class FakePasteEngine implements PasteEngine {
+        final List<PasteRequest> requests = new CopyOnWriteArrayList<>();
+        final List<FakeHandle> handles = new CopyOnWriteArrayList<>();
+        volatile boolean autoComplete;
+
+        @Override
+        public PasteHandle start(PasteRequest request) {
+            FakeHandle handle = new FakeHandle();
+            requests.add(request);
+            handles.add(handle);
+            if (autoComplete) handle.finish(PasteResult.Outcome.COMPLETED);
+            return handle;
+        }
+
+        void completeAll(PasteResult.Outcome outcome) {
+            for (FakeHandle handle : handles) handle.finish(outcome);
+        }
+
+        @Override public int pendingCount() { return (int) handles.stream().filter(h -> !h.isDone()).count(); }
+
+        @Override public void shutdown() { }
+    }
+
+    private static final class FakeHandle implements PasteEngine.PasteHandle {
+        private final CompletableFuture<PasteResult> done = new CompletableFuture<>();
+
+        void finish(PasteResult.Outcome outcome) { done.complete(PasteResult.of(outcome)); }
+
+        @Override public void cancel() { finish(PasteResult.Outcome.CANCELLED); }
+
+        @Override public boolean isDone() { return done.isDone(); }
+
+        @Override public CompletableFuture<PasteResult> completion() { return done; }
+    }
+
+    /** MockBukkit が持たない「遠くで消える」設定の変更だけを受け流す世界。 */
+    private static final class SpawnTolerantWorld extends WorldMock {
+        @Override
+        public org.bukkit.entity.Entity spawnEntity(Location location, EntityType type) {
             var entity = super.spawnEntity(location, type);
             if (!(entity instanceof org.bukkit.entity.LivingEntity living)) return entity;
-            // MockBukkit supports the real entity geometry but omits this despawn-policy setter.
             var supported = spy(living);
             doNothing().when(supported).setRemoveWhenFarAway(false);
             return supported;
-        }
-
-        @Override public boolean isChunkLoaded(int x, int z) {
-            requestedChunks.add(x + "," + z);
-            return true;
-        }
-
-        @Override public ChunkMock getChunkAt(int x, int z) {
-            ChunkMock chunk = mock(ChunkMock.class);
-            when(chunk.getX()).thenReturn(x);
-            when(chunk.getZ()).thenReturn(z);
-            when(chunk.getWorld()).thenReturn(this);
-            when(chunk.isLoaded()).thenReturn(true);
-            return chunk;
         }
     }
 }

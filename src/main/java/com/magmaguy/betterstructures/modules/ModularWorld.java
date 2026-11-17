@@ -4,41 +4,55 @@ import com.magmaguy.betterstructures.MetadataHandler;
 import com.magmaguy.betterstructures.api.WorldGenerationFinishEvent;
 import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfig;
 import com.magmaguy.betterstructures.config.spawnpools.SpawnPoolsConfigFields;
-import com.magmaguy.betterstructures.util.PlatformScheduler;
-import com.magmaguy.betterstructures.util.SchematicFileUtils;
-import com.magmaguy.betterstructures.worldedit.Schematic;
-import com.magmaguy.betterstructures.worldedit.SchematicClipboardCache;
-import com.magmaguy.betterstructures.worldedit.SchematicConversionLog;
-import com.magmaguy.betterstructures.worldedit.SchematicDiskCache;
-import com.magmaguy.elitemobs.config.custombosses.CustomBossesConfig;
-import com.magmaguy.elitemobs.config.custombosses.CustomBossesConfigFields;
-import com.magmaguy.elitemobs.mobconstructor.custombosses.CustomBossEntity;
+import com.magmaguy.betterstructures.integration.EliteMobsHook;
+import com.magmaguy.betterstructures.integration.elitemobs.EliteMobsHookSelector;
+import com.magmaguy.betterstructures.paste.PasteRequest;
+import com.magmaguy.betterstructures.runtime.Services;
+import com.magmaguy.betterstructures.runtime.WorkerPool;
+import com.magmaguy.betterstructures.schematic.model.StructureSchematic;
+import com.magmaguy.betterstructures.schematic.reader.SchematicReader;
 import com.magmaguy.elitemobs.mobconstructor.custombosses.InstancedBossEntity;
 import com.magmaguy.magmacore.util.Logger;
-import com.sk89q.worldedit.extent.clipboard.Clipboard;
 import lombok.Getter;
-import org.bukkit.*;
+import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.util.Vector;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
+/**
+ * 生成されたダンジョン1つ分の目印（出現位置・宝箱・樽・出口・ボス）の置き場。
+ *
+ * <p>目印は貼り付けの途中に、複数のリージョンのスレッドから登録されるため、保持する集合は
+ * スレッドセーフにしてある。EliteMobs の型はここでは扱わず、{@link EliteMobsHook} の裏に置く
+ * （EliteMobs が無くてもこのクラスは読み込める）。
+ */
 public class ModularWorld {
 
     @Getter
-    private final List<Location> spawnLocations = new ArrayList<>();
+    private final List<Location> spawnLocations = new CopyOnWriteArrayList<>();
     @Getter
-    private final List<ExitLocation> exitLocations = new ArrayList<>();
+    private final List<ExitLocation> exitLocations = new CopyOnWriteArrayList<>();
     @Getter
-    private final List<Location> chestLocations = new ArrayList<>();
+    private final List<Location> chestLocations = new CopyOnWriteArrayList<>();
     @Getter
-    private final List<Location> barrelLocations = new ArrayList<>();
-    private final HashSet<ModulePasting.InterpretedSign> otherLocations = new HashSet<>();
-    private final List<ScheduledInstancedEntity> scheduledInstancedEntities = new ArrayList<>();
+    private final List<Location> trappedChestLocations = new CopyOnWriteArrayList<>();
+    @Getter
+    private final List<Location> barrelLocations = new CopyOnWriteArrayList<>();
+    private final Set<ModulePasting.InterpretedSign> otherLocations = ConcurrentHashMap.newKeySet();
+    private final List<ScheduledInstancedEntity> scheduledInstancedEntities = new CopyOnWriteArrayList<>();
     @Getter
     private final File worldFolder;
     @Getter
@@ -46,9 +60,17 @@ public class ModularWorld {
     private final Location center;
     @Getter
     private final double horizontalSize;
+    private final EliteMobsHook eliteMobs;
+    private volatile boolean missingEliteMobsWarned;
 
     public ModularWorld(World world, File worldFolder, List<ModulePasting.InterpretedSign> interpretedSigns,
                         Location center, double horizontalSize) {
+        this(world, worldFolder, interpretedSigns, center, horizontalSize, null);
+    }
+
+    /** @param eliteMobs EliteMobs の窓口。null なら {@link EliteMobsHookSelector#select()} を使う */
+    ModularWorld(World world, File worldFolder, List<ModulePasting.InterpretedSign> interpretedSigns,
+                 Location center, double horizontalSize, EliteMobsHook eliteMobs) {
         this.world = Objects.requireNonNull(world, "world");
         Objects.requireNonNull(center, "center");
         if (!world.equals(center.getWorld()) || !Double.isFinite(center.getX()) || !Double.isFinite(center.getY())
@@ -58,7 +80,12 @@ public class ModularWorld {
         this.center = center.clone();
         this.horizontalSize = horizontalSize;
         this.worldFolder = worldFolder;
+        this.eliteMobs = eliteMobs;
         interpretedSigns.forEach(this::addSign);
+    }
+
+    private EliteMobsHook eliteMobs() {
+        return eliteMobs != null ? eliteMobs : EliteMobsHookSelector.select();
     }
 
     public Location getCenter() { return center.clone(); }
@@ -80,19 +107,22 @@ public class ModularWorld {
                 spawnLocations.add(ModulePasting.entitySpawnLocation(interpretedSign.location()));
             else if (signText.contains("[exit]")) {
                 processExitLocations(interpretedSign);
+            } else if (signText.contains("[trapped_chest]")) {
+                trappedChestLocations.add(blockLocation(interpretedSign));
             } else if (signText.contains("[chest]")) {
-                chestLocations.add(new Location(world,
-                        (int) interpretedSign.location().getX(),
-                        (int) interpretedSign.location().getY(),
-                        (int) interpretedSign.location().getZ()));
+                chestLocations.add(blockLocation(interpretedSign));
             } else if (signText.contains("[barrel]")) {
-                barrelLocations.add(new Location(world,
-                        (int) interpretedSign.location().getX(),
-                        (int) interpretedSign.location().getY(),
-                        (int) interpretedSign.location().getZ()));
+                barrelLocations.add(blockLocation(interpretedSign));
             } else
                 otherLocations.add(interpretedSign);
         }
+    }
+
+    private Location blockLocation(ModulePasting.InterpretedSign sign) {
+        return new Location(world,
+                (int) sign.location().getX(),
+                (int) sign.location().getY(),
+                (int) sign.location().getZ());
     }
 
     public static String extractPoolText(String input) {
@@ -104,19 +134,13 @@ public class ModularWorld {
                 || interpretedSign.text().get(1).isBlank()
                 || interpretedSign.text().get(2).isBlank()) {
             Logger.warn("Failed to get both exit clipboard filenames from sign " + interpretedSign.location());
-            exitLocations.add(new ExitLocation(new Location(world,
-                    (int) interpretedSign.location().getX(),
-                    (int) interpretedSign.location().getY(),
-                    (int) interpretedSign.location().getZ()),
+            exitLocations.add(new ExitLocation(blockLocation(interpretedSign),
                     "genericelevator_up",
                     "genericelevator_down"));
             return;
         }
 
-        exitLocations.add(new ExitLocation(new Location(world,
-                (int) interpretedSign.location().getX(),
-                (int) interpretedSign.location().getY(),
-                (int) interpretedSign.location().getZ()),
+        exitLocations.add(new ExitLocation(blockLocation(interpretedSign),
                 interpretedSign.text().get(1),
                 interpretedSign.text().get(2)));
     }
@@ -139,9 +163,10 @@ public class ModularWorld {
         return barrels;
     }
 
-    //Component schematics load one at a time at world-generation time, outside the startup scan,
-    //so every generated world used to re-run Mojang's data converter over the same few files.
-    private static final SchematicClipboardCache componentClipboardCache = new SchematicClipboardCache();
+    /** 出口の部品の図面。ファイルの更新日時と大きさが変わらない限り読み直さない。 */
+    private record CachedComponent(long lastModified, long length, StructureSchematic schematic) { }
+
+    private static final Map<String, CachedComponent> componentCache = new ConcurrentHashMap<>();
 
     //todo: maybe this should go into extractioncraft later
     public List<Location> spawnInaccessibleExitLocations() {
@@ -158,47 +183,61 @@ public class ModularWorld {
 
         File componentsFolder = new File(MetadataHandler.PLUGIN.getDataFolder().getAbsolutePath()
                 + File.separatorChar + "components");
-        //Pruning needs the full current component set, not just the files this world references —
-        //anything the prune cannot account for is deleted.
-        List<File> componentFiles = new ArrayList<>();
-        SchematicFileUtils.scanDirectoryForSchematics(componentsFolder, componentFiles);
-        int forgotten = componentClipboardCache.retainOnly(componentFiles);
-        SchematicDiskCache diskCache =
-                new SchematicDiskCache(SchematicDiskCache.componentCacheFolder());
-
-        // Conversion-log capture: these component schematics load fresh at
-        // world-generation time, outside the startup scan, so without a session
-        // here they were the one remaining path spamming raw DataFixerUpper
-        // errors for legacy block entries.
-        try (SchematicConversionLog.Session conversionLog = SchematicConversionLog.capture()) {
-            for (ExitLocation exitLocation : exitLocations) {
-                File exitLocationsFile = new File(componentsFolder,
-                        componentFilename.apply(exitLocation) + ".schem");
-                if (!exitLocationsFile.exists()) {
-                    Logger.warn("Failed to find elevator file");
-                    continue;
-                }
-                randomizedLocations.add(exitLocation.location);
-                Schematic.paste(loadComponent(exitLocationsFile, diskCache), exitLocation.location);
+        List<ExitPaste> pastes = new ArrayList<>();
+        for (ExitLocation exitLocation : exitLocations) {
+            File exitLocationsFile = new File(componentsFolder, componentFilename.apply(exitLocation) + ".schem");
+            if (!exitLocationsFile.exists()) {
+                Logger.warn("Failed to find elevator file");
+                continue;
             }
+            randomizedLocations.add(exitLocation.location);
+            pastes.add(new ExitPaste(exitLocationsFile, exitLocation.location));
         }
-        if (diskCache.filesRead() > 0 || forgotten > 0)
-            diskCache.pruneStaleEntries(componentFiles);
+        if (pastes.isEmpty()) return randomizedLocations;
+
+        // ファイルの読み込みと貼り付けの依頼は呼び出したスレッドを止めずに WorkerPool で行う。
+        // 戻り値（出口の位置）は貼り付けの完了を待たない。
+        WorkerPool.instance().execute(() -> {
+            for (ExitPaste paste : pastes) pasteComponent(paste);
+        });
         return randomizedLocations;
     }
 
-    private static Clipboard loadComponent(File componentFile, SchematicDiskCache diskCache) {
-        Clipboard clipboard = componentClipboardCache.get(componentFile);
-        if (clipboard != null) return clipboard;
-        SchematicDiskCache.LoadedClipboard loaded = diskCache.loadWithIdentity(componentFile);
-        clipboard = loaded == null ? null : loaded.clipboard();
-        if (loaded != null) componentClipboardCache.put(componentFile, loaded);
-        return clipboard;
+    private record ExitPaste(File file, Location location) { }
+
+    private void pasteComponent(ExitPaste paste) {
+        StructureSchematic schematic = loadComponent(paste.file());
+        if (schematic == null) return;
+        PasteRequest request = PasteRequest.builder(world, paste.location(), schematic, NoMarkerHandler.INSTANCE)
+                .schematicOffset(new Vector(schematic.getOffsetX(), schematic.getOffsetY(), schematic.getOffsetZ()))
+                .schematicName(paste.file().getName())
+                .build();
+        try {
+            Services.pasteEngine().start(request);
+        } catch (RuntimeException e) {
+            Logger.warn("Failed to paste exit component " + paste.file().getName() + ": " + e.getMessage());
+        }
+    }
+
+    private static StructureSchematic loadComponent(File file) {
+        String key = file.getAbsolutePath();
+        CachedComponent cached = componentCache.get(key);
+        if (cached != null && cached.lastModified() == file.lastModified() && cached.length() == file.length())
+            return cached.schematic();
+        try {
+            StructureSchematic schematic = SchematicReader.read(file);
+            if (schematic == null) return null;
+            componentCache.put(key, new CachedComponent(file.lastModified(), file.length(), schematic));
+            return schematic;
+        } catch (IOException | RuntimeException e) {
+            Logger.warn("Failed to read exit component " + file.getName() + ": " + e.getMessage());
+            return null;
+        }
     }
 
     public void spawnOtherEntities() {
         Location targetLoc = center != null ? center : new Location(world, 0, 64, 0);
-        PlatformScheduler.runRegion(targetLoc, () -> {
+        com.magmaguy.betterstructures.util.PlatformScheduler.runRegion(targetLoc, () -> {
             for (ModulePasting.InterpretedSign otherLocation : List.copyOf(otherLocations))
                 spawnOtherEntitiesAt(otherLocation);
             //got to keep the memory clear for this one, unfortunately
@@ -208,6 +247,7 @@ public class ModularWorld {
     }
 
     void spawnOtherEntitiesAt(ModulePasting.InterpretedSign otherLocation) {
+        EliteMobsHook hook = eliteMobs();
         for (String string : otherLocation.text())
             if (string.contains("pool")) {
                 String parsedString = extractPoolText(string) + ".yml";
@@ -221,33 +261,42 @@ public class ModularWorld {
                     Logger.warn("Spawn pool " + parsedString + " has no entries");
                     continue;
                 }
-                CustomBossesConfigFields customBossesConfigFields = CustomBossesConfig.getCustomBoss(bossFilename);
-                if (customBossesConfigFields == null) {
+                if (!hook.isAvailable()) {
+                    if (!missingEliteMobsWarned) {
+                        Logger.warn("Spawn pool " + parsedString + " requests bosses, but EliteMobs is not enabled. Its bosses were not spawned.");
+                        missingEliteMobsWarned = true;
+                    }
+                    continue;
+                }
+                if (!hook.bossExists(bossFilename)) {
                     Logger.warn("Spawn pool " + parsedString + " references missing boss " + bossFilename);
                     continue;
                 }
                 Location spawnLocation = ModulePasting.entitySpawnLocation(otherLocation.location());
-                if (!customBossesConfigFields.isInstanced()) {
-                    CustomBossEntity customBossEntity = new CustomBossEntity(customBossesConfigFields);
-                    customBossEntity.spawn(spawnLocation, true);
+                if (!hook.isInstancedBoss(bossFilename)) {
+                    hook.spawnPoolBoss(spawnLocation, bossFilename);
                 } else {
-                    scheduledInstancedEntities.add(new ScheduledInstancedEntity(spawnLocation, customBossesConfigFields,
+                    scheduledInstancedEntities.add(new ScheduledInstancedEntity(spawnLocation, bossFilename,
                             parsedString, spawnPoolsConfigFields.getMaxLevel()));
                 }
             }
         otherLocations.remove(otherLocation);
     }
 
+    /**
+     * 予約しておいたインスタンス型のボスを出す。戻り値の要素は EliteMobs の {@link InstancedBossEntity}
+     * （公開 API なので署名は変えない。EliteMobs が無ければ空のリスト）。
+     */
+    @SuppressWarnings("unchecked")
     public List<InstancedBossEntity> spawnInstancedEntities() {
-        List<InstancedBossEntity> instancedBossEntities = new ArrayList<>();
-        for (ScheduledInstancedEntity scheduledInstancedEntity : scheduledInstancedEntities) {
-            InstancedBossEntity instancedBossEntity = new InstancedBossEntity(scheduledInstancedEntity.configFields,
-                    scheduledInstancedEntity.location, scheduledInstancedEntity.level, getDifficultyId(scheduledInstancedEntity.location));
-            instancedBossEntity.spawn(true);
-            instancedBossEntity.addCustomData(new NamespacedKey("betterstructures", "spawnpool"), scheduledInstancedEntity.originalSpawnPool);
-            instancedBossEntities.add(instancedBossEntity);
+        List<Object> spawned = new ArrayList<>();
+        EliteMobsHook hook = eliteMobs();
+        for (ScheduledInstancedEntity scheduled : scheduledInstancedEntities) {
+            Object entity = hook.spawnInstancedBoss(scheduled.location, scheduled.bossFilename, scheduled.level,
+                    getDifficultyId(scheduled.location), scheduled.originalSpawnPool);
+            if (entity != null) spawned.add(entity);
         }
-        return instancedBossEntities;
+        return (List<InstancedBossEntity>) (List<?>) spawned;
     }
 
     public void generationFinished() {
@@ -259,7 +308,7 @@ public class ModularWorld {
 
     private record ScheduledInstancedEntity(
             Location location,
-            CustomBossesConfigFields configFields,
+            String bossFilename,
             String originalSpawnPool,
             int level
     ){}
