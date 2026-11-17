@@ -53,6 +53,17 @@ public final class StructureSchematic {
 
     private final Map<Integer, StructureSchematic> rotatedCache = new ConcurrentHashMap<>();
 
+    /** 図面の NBT の DataVersion。0 は不明（読み込み側がまだ入れていない）。 */
+    private volatile int dataVersion;
+
+    public int getDataVersion() {
+        return dataVersion;
+    }
+
+    public void setDataVersion(int dataVersion) {
+        this.dataVersion = dataVersion;
+    }
+
     public StructureSchematic(
             short width,
             short height,
@@ -288,11 +299,13 @@ public final class StructureSchematic {
         // Offsets rotation
         int[] rotOffset = rotateCoordinates(offsetX, offsetY, offsetZ, normalized);
 
-        return new StructureSchematic(
+        StructureSchematic rotated = new StructureSchematic(
                 newWidth, newHeight, newLength,
                 rotOffset[0], rotOffset[1], rotOffset[2],
                 newBlocks, newBlockEntities, newParsedSigns, newEntities
         );
+        rotated.setDataVersion(dataVersion);
+        return rotated;
     }
 
     private int[] rotateCoordinates(int x, int y, int z, int deg) {

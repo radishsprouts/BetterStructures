@@ -247,6 +247,86 @@ public final class SimpleNbt {
     }
 
     /**
+     * タグを SNBT（文字列形式の NBT）に変換する。{@code Bukkit.getEntityFactory().createEntitySnapshot(String)} に渡す用。
+     * 文字列は引用符で囲み、{@code \} と {@code "} をエスケープする。
+     */
+    public static String toSnbt(Tag tag) {
+        StringBuilder out = new StringBuilder();
+        appendSnbt(out, tag);
+        return out.toString();
+    }
+
+    private static void appendSnbt(StringBuilder out, Tag tag) {
+        if (tag instanceof ByteTag t) {
+            out.append(t.asByte()).append('b');
+        } else if (tag instanceof ShortTag t) {
+            out.append(t.asShort()).append('s');
+        } else if (tag instanceof IntTag t) {
+            out.append(t.asInt());
+        } else if (tag instanceof LongTag t) {
+            out.append(t.asLong()).append('L');
+        } else if (tag instanceof FloatTag t) {
+            out.append(t.asFloat()).append('f');
+        } else if (tag instanceof DoubleTag t) {
+            out.append(t.asDouble()).append('d');
+        } else if (tag instanceof StringTag t) {
+            appendQuoted(out, t.asString());
+        } else if (tag instanceof ByteArrayTag t) {
+            out.append("[B;");
+            byte[] values = t.asByteArray();
+            for (int i = 0; i < values.length; i++) {
+                if (i > 0) out.append(',');
+                out.append(values[i]).append('b');
+            }
+            out.append(']');
+        } else if (tag instanceof IntArrayTag t) {
+            out.append("[I;");
+            int[] values = t.asIntArray();
+            for (int i = 0; i < values.length; i++) {
+                if (i > 0) out.append(',');
+                out.append(values[i]);
+            }
+            out.append(']');
+        } else if (tag instanceof LongArrayTag t) {
+            out.append("[L;");
+            long[] values = t.asLongArray();
+            for (int i = 0; i < values.length; i++) {
+                if (i > 0) out.append(',');
+                out.append(values[i]).append('L');
+            }
+            out.append(']');
+        } else if (tag instanceof ListTag t) {
+            out.append('[');
+            for (int i = 0; i < t.size(); i++) {
+                if (i > 0) out.append(',');
+                appendSnbt(out, t.get(i));
+            }
+            out.append(']');
+        } else if (tag instanceof CompoundTag t) {
+            out.append('{');
+            boolean first = true;
+            for (Map.Entry<String, Tag> entry : t.getValue().entrySet()) {
+                if (!first) out.append(',');
+                first = false;
+                appendQuoted(out, entry.getKey());
+                out.append(':');
+                appendSnbt(out, entry.getValue());
+            }
+            out.append('}');
+        }
+    }
+
+    private static void appendQuoted(StringBuilder out, String value) {
+        out.append('"');
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == '\\' || c == '"') out.append('\\');
+            out.append(c);
+        }
+        out.append('"');
+    }
+
+    /**
      * Reads a root CompoundTag from a file, auto-detecting GZIP compression.
      */
     public static CompoundTag readFile(File file) throws IOException {

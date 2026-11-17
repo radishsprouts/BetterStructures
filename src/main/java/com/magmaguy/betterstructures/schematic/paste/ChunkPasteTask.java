@@ -33,9 +33,13 @@ import java.util.*;
 import java.util.function.Function;
 
 /**
+ * @deprecated 貼り付けは {@code paste.NativePasteEngine}（{@code paste.ChunkPasteTask}）に一本化した。
+ * 呼び出し元の付け替えが済み次第、削除する。新しく使わないこと。
+ *
  * Handles time-budgeted pasting of blocks, tile entities, and entities for a single chunk
  * on its owning Folia region thread.
  */
+@Deprecated
 public final class ChunkPasteTask implements Runnable {
 
     private final StructurePasteSession session;
