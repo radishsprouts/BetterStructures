@@ -91,8 +91,11 @@ public final class BetterStructures extends JavaPlugin {
         MetadataHandler.PLUGIN = this;
         SchematicConfig.prepareForEnable();
         // 流量制御の振り分けタイマー（グローバルリージョンの1tick周期。振り分けるだけで止めない）。
-        // PasteEngine / RegionProtection を Services へ入れる配線は、実装クラスが入った統合時に足す。
+        // PasteEngine を Services へ入れる配線は、貼り付けエンジン（U2）の統合時に足す。
         GenerationGovernor.instance().startTimer();
+        // 保護区域の連携。WorldGuard が無い・使えなければ何もしない実装が入る（softdepend なので onEnable 時点で判定できる）。
+        com.magmaguy.betterstructures.runtime.Services.setRegionProtection(
+                com.magmaguy.betterstructures.integration.RegionProtectionSelector.select());
         Bukkit.getLogger().info("    ____       __  __            _____ __                  __                      ");
         Bukkit.getLogger().info("   / __ )___  / /_/ /____  _____/ ___// /________  _______/ /___  __________  _____");
         Bukkit.getLogger().info("  / __  / _ \\/ __/ __/ _ \\/ ___/\\__ \\/ __/ ___/ / / / ___/ __/ / / / ___/ _ \\/ ___/");

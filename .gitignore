@@ -46,3 +46,5 @@ dependency-reduced-pom.xml
 __pycache__/
 *.pyc
 WorldEdit/
+# Windows は大文字小文字を区別せず照合するため、上の行がソースの integration/worldedit/ にも当たる。ソースは追跡する。
+!src/**/integration/worldedit/
