@@ -56,8 +56,19 @@ import java.util.List;
 
 public final class BetterStructures extends JavaPlugin {
     private volatile boolean contentReloadInProgress;
-    private final List<CommandSender> activeReloadSenders = new ArrayList<>();
-    private final List<CommandSender> queuedReloadSenders = new ArrayList<>();
+    private List<CommandSender> activeReloadSenders = new ArrayList<>();
+    private List<CommandSender> queuedReloadSenders = new ArrayList<>();
+
+    /**
+     * 試験専用。コンストラクタを通さずに作ったモックではフィールド初期化子が走らないため、
+     * 再読み込みの送信者リストをここで用意する（リフレクションで差し込まないための口）。
+     */
+    void prepareReloadStateForTest() {
+        activeReloadSenders = new ArrayList<>();
+        queuedReloadSenders = new ArrayList<>();
+        // 有効フラグも初期化子が走らないモックでは立たない。onEnable は試験側で空にしてから呼ぶ。
+        setEnabled(true);
+    }
 
     public static final NightbreakPluginSpec NIGHTBREAK_PLUGIN_SPEC = new NightbreakPluginSpec(
             "BetterStructures",

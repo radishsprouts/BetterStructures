@@ -5,16 +5,13 @@ import com.magmaguy.magmacore.MagmaCore;
 import com.magmaguy.magmacore.initialization.PluginInitializationContext;
 import com.magmaguy.magmacore.initialization.PluginInitializationManager;
 import com.magmaguy.magmacore.initialization.PluginInitializationState;
-import org.bukkit.plugin.java.JavaPlugin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockbukkit.mockbukkit.MockBukkit;
 import org.mockbukkit.mockbukkit.ServerMock;
 
-import java.lang.reflect.Field;
 import java.nio.file.Files;
-import java.util.ArrayList;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -47,12 +44,12 @@ class ContentReloadLifecycleTest {
         doReturn(owner.getPluginLoader()).when(plugin).getPluginLoader();
         doReturn(server).when(plugin).getServer();
         doReturn(null).when(plugin).getResource(anyString());
-        set(JavaPlugin.class, plugin, "isEnabled", true);
-        set(BetterStructures.class, plugin, "activeReloadSenders", new ArrayList<>());
-        set(BetterStructures.class, plugin, "queuedReloadSenders", new ArrayList<>());
+        // 有効フラグは JavaPlugin の private フィールドなので、リフレクションで書かず、
+        // 本物の setEnabled(true) 経由で立てる（onEnable は本番の初期化を走らせないよう空にする）。
+        doNothing().when(plugin).onEnable();
+        plugin.prepareReloadStateForTest();
         MetadataHandler.PLUGIN = plugin;
         previousCore = MagmaCore.getInstance();
-        set(MagmaCore.class, null, "instance", null);
         MagmaCore.createInstance(plugin);
         PluginInitializationManager.onEnable(plugin);
         PluginInitializationManager.setState(plugin, PluginInitializationState.INITIALIZED);
@@ -69,7 +66,6 @@ class ContentReloadLifecycleTest {
         } finally {
             MetadataHandler.PLUGIN = null;
             MockBukkit.unmock();
-            set(MagmaCore.class, null, "instance", previousCore);
         }
     }
 
@@ -150,11 +146,5 @@ class ContentReloadLifecycleTest {
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
         }
         assertTrue(completed.getAsBoolean(), "The managed content reload did not reach its terminal state");
-    }
-
-    private static void set(Class<?> type, Object target, String name, Object value) throws Exception {
-        Field field = type.getDeclaredField(name);
-        field.setAccessible(true);
-        field.set(target, value);
     }
 }
