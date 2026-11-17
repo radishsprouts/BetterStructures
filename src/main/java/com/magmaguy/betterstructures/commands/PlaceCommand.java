@@ -1,9 +1,12 @@
 package com.magmaguy.betterstructures.commands;
 
 import com.magmaguy.betterstructures.BetterStructures;
-import com.magmaguy.betterstructures.buildingfitter.FitAnything;
 import com.magmaguy.betterstructures.config.generators.GeneratorConfigFields;
+import com.magmaguy.betterstructures.scan.ScanCoordinator;
+import com.magmaguy.betterstructures.scan.ScanOutcome;
+import com.magmaguy.betterstructures.scan.ScanRequest;
 import com.magmaguy.betterstructures.schematics.SchematicContainer;
+import com.magmaguy.betterstructures.util.PlatformScheduler;
 import com.magmaguy.magmacore.command.AdvancedCommand;
 import com.magmaguy.magmacore.command.CommandData;
 import com.magmaguy.magmacore.command.SenderType;
@@ -43,6 +46,10 @@ public class PlaceCommand extends AdvancedCommand {
         placeSchematic(commandData.getStringArgument("schematic"), commandData.getStringArgument("type"), commandData.getPlayerSender());
     }
 
+    /**
+     * 自然生成と同じ流れ（流量制御・hold・予算）で、実行者のいるチャンクを原点に走査する。
+     * 結果は走査が終わった時に実行者へ伝える。
+     */
     private void placeSchematic(String schematicFile, String schematicType, Player player) {
         try {
             SchematicContainer commandSchematicContainer = null;
@@ -62,10 +69,22 @@ public class PlaceCommand extends AdvancedCommand {
                 player.sendMessage("[BetterStructures] Failed to get valid schematic type!");
                 return;
             }
-            FitAnything.commandBasedCreation(player.getLocation().getChunk(), structureType, commandSchematicContainer);
-            player.sendMessage("[BetterStructures] Attempted to place " + schematicFile + " !");
+            var chunk = player.getLocation().getChunk();
+            ScanCoordinator.submit(new ScanRequest(chunk.getWorld(), chunk.getX(), chunk.getZ(), structureType,
+                    commandSchematicContainer, outcome -> report(player, schematicFile, outcome)));
+            player.sendMessage("[BetterStructures] Scanning for a place to put " + schematicFile + " ...");
         } catch (Exception ex) {
             player.sendMessage("[BetterStructures] Invalid schematic!");
         }
+    }
+
+    /** 走査の結末を実行者へ伝える。走査は別のスレッドで終わるので、実行者のスケジューラへ回す。 */
+    private static void report(Player player, String schematicFile, ScanOutcome outcome) {
+        String message = switch (outcome) {
+            case PLACED -> "[BetterStructures] Placing " + schematicFile + " !";
+            case NO_FIT -> "[BetterStructures] Could not find a suitable place for " + schematicFile + " near you.";
+            default -> "[BetterStructures] Could not place " + schematicFile + ": " + outcome.description() + ".";
+        };
+        PlatformScheduler.runEntity(player, () -> player.sendMessage(message));
     }
 }
