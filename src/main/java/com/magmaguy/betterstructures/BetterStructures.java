@@ -32,8 +32,19 @@ import com.magmaguy.betterstructures.runtime.RuntimeSettings;
 import com.magmaguy.betterstructures.runtime.Services;
 import com.magmaguy.betterstructures.runtime.ThreadTickBudget;
 import com.magmaguy.betterstructures.runtime.WorkerPool;
-import com.magmaguy.betterstructures.worldedit.SchematicClipboardCache;
-import com.magmaguy.betterstructures.worldedit.WorldEditCompatibility;
+import com.magmaguy.betterstructures.buildingfitter.FitAnything;
+import com.magmaguy.betterstructures.integration.EliteMobsHook;
+import com.magmaguy.betterstructures.integration.WorldEditCompatibility;
+import com.magmaguy.betterstructures.integration.elitemobs.EliteMobsHookSelector;
+import com.magmaguy.betterstructures.modules.ModuleResume;
+import com.magmaguy.betterstructures.paste.BuildingMarkerHandler;
+import com.magmaguy.betterstructures.paste.MarkerHandler;
+import com.magmaguy.betterstructures.paste.NativePasteEngine;
+import com.magmaguy.betterstructures.paste.PasteJournal;
+import com.magmaguy.betterstructures.paste.PasteRequest;
+import com.magmaguy.betterstructures.scan.ScanCoordinator;
+import com.magmaguy.betterstructures.scan.ScanEvents;
+import com.magmaguy.betterstructures.scan.ScanResume;
 import com.magmaguy.easyminecraftgoals.NMSManager;
 import com.magmaguy.magmacore.MagmaCore;
 import com.magmaguy.magmacore.command.CommandManager;
@@ -60,6 +71,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.function.Function;
 
 public final class BetterStructures extends JavaPlugin {
     private volatile boolean contentReloadInProgress;
@@ -91,11 +103,12 @@ public final class BetterStructures extends JavaPlugin {
         MetadataHandler.PLUGIN = this;
         SchematicConfig.prepareForEnable();
         // 流量制御の振り分けタイマー（グローバルリージョンの1tick周期。振り分けるだけで止めない）。
-        // PasteEngine を Services へ入れる配線は、貼り付けエンジン（U2）の統合時に足す。
         GenerationGovernor.instance().startTimer();
         // 保護区域の連携。WorldGuard が無い・使えなければ何もしない実装が入る（softdepend なので onEnable 時点で判定できる）。
         com.magmaguy.betterstructures.runtime.Services.setRegionProtection(
                 com.magmaguy.betterstructures.integration.RegionProtectionSelector.select());
+        // 独自の貼り付けエンジン（WorldEdit 不要）と、走査・再開の配線。再開自体は図面の読み込みが済んでから行う。
+        wirePasteRuntime();
         Bukkit.getLogger().info("    ____       __  __            _____ __                  __                      ");
         Bukkit.getLogger().info("   / __ )___  / /_/ /____  _____/ ___// /________  _______/ /___  __________  _____");
         Bukkit.getLogger().info("  / __  / _ \\/ __/ __/ _ \\/ ___/\\__ \\/ __/ ___/ / / / ___/ __/ / / / ___/ _ \\/ ___/");
@@ -178,13 +191,34 @@ public final class BetterStructures extends JavaPlugin {
         Services.clear();
     }
 
-    /** WorldEdit の型を持つ旧クラスの呼び出しを、読み込みの失敗（LinkageError）だけ握って続ける。 */
-    private static void runIgnoringLinkageError(Runnable action) {
-        try {
-            action.run();
-        } catch (LinkageError error) {
-            java.util.logging.Logger.getLogger("BetterStructures").warning("WorldEdit が無いため読み込めないクラスの後片付けを省きました: " + error);
-        }
+    /** 貼り付けエンジンを作り、走査・再開との配線をする（onEnable）。 */
+    private void wirePasteRuntime() {
+        wireNativePaste(new NativePasteEngine(this), EliteMobsHookSelector.select());
+    }
+
+    /**
+     * 貼り付けエンジンを入れ、地形走査の目印の処理・停止をまたぐ再開（図面の引き直し・走査の待ち行列）を配線する。
+     * 記録からの再開そのもの（{@link NativePasteEngine#resumeFromJournal()}）は、図面の読み込みが済んでから呼ぶ。
+     */
+    public static NativePasteEngine wireNativePaste(NativePasteEngine engine, EliteMobsHook eliteMobs) {
+        Services.setPasteEngine(engine);
+        Function<FitAnything, MarkerHandler> markers = fit -> new BuildingMarkerHandler(fit, eliteMobs);
+        ScanCoordinator.setMarkerHandlerFactory(markers);
+        engine.setResumer(entry -> rebuildPaste(entry, markers, eliteMobs));
+        engine.setScanQueueSource(ScanCoordinator::journalEntries);
+        engine.setScanQueueRestorer(ScanCoordinator::restore);
+        return engine;
+    }
+
+    /**
+     * 記録の1件から貼り付けの依頼を作り直す。図面名の鍵は、ダンジョンのモジュールなら
+     * {@code dungeon|設定名|接尾辞|モジュール名}（{@link ModuleResume}）、通常の構造物なら
+     * {@code SchematicContainer.getConfigFilename()}（{@link ScanResume}）。引けなければ null（記録は残る）。
+     */
+    static PasteRequest rebuildPaste(PasteJournal.Entry entry, Function<FitAnything, MarkerHandler> markers,
+                                     EliteMobsHook eliteMobs) {
+        if (ModuleResume.handles(entry)) return ModuleResume.rebuild(entry, eliteMobs);
+        return ScanResume.rebuild(entry, markers, ScanEvents.BUKKIT);
     }
 
     /**
@@ -209,7 +243,7 @@ public final class BetterStructures extends JavaPlugin {
     static String metricsLine() {
         GenerationGovernor governor = GenerationGovernor.instance();
         ChunkLoadLimiter limiter = ChunkLoadLimiter.instance();
-        WorkerPool pool = WorkerPool.instance();
+        WorkerPool pool = WorkerPool.peek(); // 作らずに読む（未起動・停止後は null）
         PasteEngine engine = Services.pasteEngineOrNull();
         long budgetMicros = ThreadTickBudget.current().limitNanos() / 1_000L;
         return "[runtime] 待ち行列(待ち/実行) 走査=" + governor.waiting(GenerationGovernor.Lane.SCAN)
@@ -219,7 +253,8 @@ public final class BetterStructures extends JavaPlugin {
                 + " ダンジョン=" + governor.waiting(GenerationGovernor.Lane.WFC)
                 + "/" + governor.running(GenerationGovernor.Lane.WFC)
                 + " | チャンク読み込み 実行中=" + limiter.activeCount() + " 待ち=" + limiter.queuedCount()
-                + " | ワーカー 待ち=" + pool.queuedCount() + " スレッド=" + pool.threadCount()
+                + " | ワーカー 待ち=" + (pool == null ? "-" : String.valueOf(pool.queuedCount()))
+                + " スレッド=" + (pool == null ? "-" : String.valueOf(pool.threadCount()))
                 + " | 予算の上限=" + (budgetMicros / 1000.0) + "ms"
                 + " | 貼り付け中=" + (engine == null ? "-" : String.valueOf(engine.pendingCount()));
     }
@@ -253,16 +288,14 @@ public final class BetterStructures extends JavaPlugin {
             metricsTask = null;
         }
         // 新しい依頼を止め、貼り付けエンジンの最後の記録を同期で書き、待ち行列・読み込み・ワーカーを片付ける。
+        // エンジンの最後の記録に走査の待ち行列も載せるため、ScanCoordinator の停止はこの後に行う。
         shutdownRuntimeServices();
-        com.magmaguy.betterstructures.schematic.paste.StructurePasteSession.shutdownAll();
-        // WorldEdit の型を持つ旧クラスは、WorldEdit が無い環境では読み込み自体が失敗する。
-        // 失敗しても停止処理の残りを続けるため、読み込みの失敗（LinkageError）だけを握る。
-        runIgnoringLinkageError(SchematicClipboardCache::shutdown);
-        runIgnoringLinkageError(SchematicContainer::shutdown);
+        ScanCoordinator.shutdown();
+        SchematicContainer.shutdown();
         NewChunkLoadEvent.shutdown();
         ChunkPregenerator.shutdown();
         BSPackage.shutdown();
-        runIgnoringLinkageError(ModulesContainer::shutdown);
+        ModulesContainer.shutdown();
         WFCGenerator.shutdown();
         // 貼り付けの後片付けが済んだ後で hold の記録を空にする。
         PluginChunkHolds.shutdown();
@@ -368,7 +401,7 @@ public final class BetterStructures extends JavaPlugin {
         if (initializationContext != null) initializationContext.step("WorldEdit Check");
         // Runs on the first tick, once WorldEdit has finished choosing its platform.
         // WorldEdit は図面の読み込み補助なので、無い環境でも続ける（読み込めない時だけ握る）。
-        PlatformScheduler.runGlobal(() -> runIgnoringLinkageError(WorldEditCompatibility::checkAdapterOnStartup));
+        PlatformScheduler.runGlobal(WorldEditCompatibility::checkAdapterOnStartup);
 
         if (initializationContext != null) initializationContext.step("Components Folder");
         ComponentsConfigFolder.initialize();
@@ -428,6 +461,11 @@ public final class BetterStructures extends JavaPlugin {
         // 設定（runtimeMetricsLogging）の読み込みが済んだ後に、計測ログの周期タスクを始める。
         restartMetricsLogging();
 
+        // 図面の読み込み（asyncInitialization）が済んだこの時点で、前回の停止で途中だった貼り付けと走査の待ち行列を戻す。
+        // 記録の読み込みと図面の引き直しは WorkerPool で行い、ここでは待たない。
+        NativePasteEngine nativeEngine = Services.pasteEngineOrNull() instanceof NativePasteEngine engine ? engine : null;
+        if (nativeEngine != null) nativeEngine.resumeFromJournal();
+
         if (initializationContext != null) initializationContext.step("Metrics");
         if (!PlatformScheduler.isFolia()) {
             metrics = new Metrics(this, 19523);
@@ -477,7 +515,7 @@ public final class BetterStructures extends JavaPlugin {
         SchematicContainer.updateOptionalPluginAvailability(
                 Bukkit.getPluginManager().isPluginEnabled("EliteMobs"),
                 Bukkit.getPluginManager().isPluginEnabled("MythicMobs"));
-        runIgnoringLinkageError(SchematicContainer::shutdown);
+        SchematicContainer.shutdown();
         NewChunkLoadEvent.prepareForContentReload();
         ChunkPregenerator.shutdown();
         // PlatformScheduler.cancelAllTasks() は呼ばない: 流量制御のタイマーと、走っている貼り付けの
@@ -560,13 +598,9 @@ public final class BetterStructures extends JavaPlugin {
         startImportedContentReload();
     }
 
-    /** WorldEdit 由来の失敗の案内。WorldEdit が無く読み込めない時は null。 */
+    /** WorldEdit 由来の失敗の案内。無ければ null（WorldEdit の型は持たない窓口なので WorldEdit が無くても呼べる）。 */
     private static String worldEditChatWarning() {
-        try {
-            return WorldEditCompatibility.chatWarning();
-        } catch (LinkageError error) {
-            return null;
-        }
+        return WorldEditCompatibility.chatWarning();
     }
 
     public static boolean isReloading() {

@@ -48,6 +48,9 @@ public final class PaletteUpgrader {
         Map<String, BlockData> convert(int dataVersion, List<String> states) throws Exception;
     }
 
+    /** {@code StructureManager#loadStructure} を非同期ワーカー同士で直列にするための専用ロック。 */
+    private static final Object LOAD_STRUCTURE_LOCK = new Object();
+
     /** 旧名→新名。バニラの DataFixer が使えない時の保険で、ブロックの ID の改名だけを扱う。 */
     private static final Map<String, String> RENAMES = Map.ofEntries(
             Map.entry("minecraft:grass_path", "minecraft:dirt_path"),
@@ -130,7 +133,14 @@ public final class PaletteUpgrader {
 
     private static Map<String, BlockData> convertWithServer(int dataVersion, List<String> states) throws Exception {
         byte[] nbt = buildStructureNbt(dataVersion, states);
-        Structure structure = Bukkit.getStructureManager().loadStructure(new ByteArrayInputStream(nbt));
+        Structure structure;
+        // loadStructure は内部で Paper の DataConverter による版の変換を走らせ、並列に呼んでよいか確定できない。
+        // 図面の読み込みは ForkJoin の共通プール（非同期ワーカー）で並列に走るので、この呼び出しだけを直列にする。
+        // 呼び出し元は非同期スレッドだけ（Folia では AsyncScheduler の runAsync 経由。メイン・リージョン・
+        // グローバルのスレッドはこの経路を通らないので、このロックを待たない）。
+        synchronized (LOAD_STRUCTURE_LOCK) {
+            structure = Bukkit.getStructureManager().loadStructure(new ByteArrayInputStream(nbt));
+        }
         List<Palette> palettes = structure.getPalettes();
         if (palettes.isEmpty()) return Map.of();
         List<BlockState> blocks = palettes.get(0).getBlocks();

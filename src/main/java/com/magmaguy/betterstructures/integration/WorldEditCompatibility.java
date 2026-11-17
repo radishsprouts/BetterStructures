@@ -1,7 +1,6 @@
-package com.magmaguy.betterstructures.worldedit;
+package com.magmaguy.betterstructures.integration;
 
 import com.magmaguy.betterstructures.MetadataHandler;
-import com.magmaguy.betterstructures.integration.SchematicImport;
 import com.magmaguy.betterstructures.integration.worldedit.WorldEditAdapterCheck;
 import com.magmaguy.betterstructures.integration.worldedit.WorldEditSchematicImport;
 import org.bukkit.Bukkit;

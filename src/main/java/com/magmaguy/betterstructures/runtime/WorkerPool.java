@@ -58,6 +58,12 @@ public final class WorkerPool {
         return local;
     }
 
+    /** 作らずに今の本体を返す。まだ起動していない・止めた後は null（計測ログなど、読むだけの用途）。 */
+    public static WorkerPool peek() {
+        WorkerPool local = instance;
+        return local == null || local.isShutdown() ? null : local;
+    }
+
     /** 停止時に呼ぶ。実行中の仕事も含めて中断する。 */
     public static void shutdownInstance() {
         WorkerPool local = instance;
